@@ -177,7 +177,7 @@ class PredictLite:
         print(self.model)
         
 
-    def fit(self, data : pd.DataFrame) -> None:
+    def fit(self, data: pd.DataFrame) -> None:
         """
         Fit the entire package, i.e. preprocessing, neural network, 
         postprocessing and other possible parameters. 
@@ -231,7 +231,7 @@ class PredictLite:
         self.logging('Model training done')
         
         
-    def predict(self, data, timestamp : pd.Timestamp = None) -> pd.DataFrame:
+    def predict(self, data: pd.DataFrame, timestamp: pd.Timestamp = None) -> pd.DataFrame:
         """
         Inference prediction. 
         """
@@ -263,7 +263,7 @@ class PredictLite:
         return pred_df
         
     
-    def preprocessing_fit(self, data : pd.DataFrame) -> None: 
+    def preprocessing_fit(self, data: pd.DataFrame) -> None: 
         """
         Fit the preprocessing parameters. 
         """
@@ -294,7 +294,7 @@ class PredictLite:
             self.preproc_stats['signal_std_values'][col] = data[col].std()
 
     
-    def preprocess(self, data : pd.DataFrame) -> pd.DataFrame: 
+    def preprocess(self, data: pd.DataFrame) -> pd.DataFrame: 
         """
         Preprocess the data.
         """
@@ -325,7 +325,7 @@ class PredictLite:
         return proc_data
     
     
-    def postprocess(self, data : np.ndarray) -> np.ndarray: 
+    def postprocess(self, data: np.ndarray) -> np.ndarray: 
         """
         Post-process the prediction results, i.e. scale the values back to original scale. 
         """
@@ -341,7 +341,7 @@ class PredictLite:
         return data
     
     
-    def create_input_tensor(self, data : pd.DataFrame, timestamp : pd.Timestamp): 
+    def create_input_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp): 
         """
         Covert dataframe data to a Torch tensor in model input configuration. 
         Timestamp gives the last row in input data. 
@@ -354,7 +354,7 @@ class PredictLite:
         return input_tensor
     
     
-    def create_target_tensor(self, data : pd.DataFrame, timestamp : pd.Timestamp): 
+    def create_target_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp): 
         """
         Covert dataframe data to a Torch tensor in model output configuration. 
         Timestamp gives the last row in input data. 
@@ -368,7 +368,7 @@ class PredictLite:
         return target_tensor
     
     
-    def create_samples(self, data : pd.DataFrame, sample_count : int) -> list:
+    def create_samples(self, data: pd.DataFrame, sample_count : int) -> list:
         """
         Create input and target sample pairs for model training. 
         """
@@ -395,19 +395,17 @@ class PredictLite:
         return samples
     
     
-    def save(self, filename : str) -> None: 
+    def save(self, filename: str) -> None: 
         """
-        Save parameters to two files.  
+        Save parameters to file.  
         """
-        fn = filename.split('.')[0]
-        
-        # Object parameters
-        params = self.get_params_dict()
-        with open(fn + '.json', 'w') as fp:
-            json.dump(params, fp)
-                
         # Model parameters 
-        torch.save(self.model.state_dict(), fn + '.pth')
+        model_params = self.model.state_dict()
+        
+        # Merge object parameters to same dict
+        model_params['object_params'] = self.get_params_dict()
+        
+        torch.save(model_params, fn + '.pth')
     
     
     def get_params_dict(self) -> dict:
@@ -422,27 +420,25 @@ class PredictLite:
         return params 
         
     
-    def load(self, filename : str) -> None: 
+    def load(self, filename: str) -> None: 
         """
         Load parameters from file.
         """
-        fn = filename.split('.')[0]
-        
-        # Object parameters
-        with open(fn + '.json', 'r') as fp:
-            params = json.load(fp)
-            
+                
+        model_params = torch.load(fn)
+        object_params = model_params.pop('object_params')
+                
         # Populate object parameters from dictionary
-        for k, v in params.items():
+        for k, v in object_params.items():
             command = 'self.{} = v'.format(k)
             exec(command)
-        
-        # Model
+
+        # Setup model from loaded parameters
         self.nn_init()
-        self.model.load_state_dict(torch.load(fn + '.pth'))
+        self.model.load_state_dict(model_params)
 
     
-    def logging(self, txt : str) -> None: 
+    def logging(self, txt: str) -> None: 
         """
         Logging and printing. 
         """
