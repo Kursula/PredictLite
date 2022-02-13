@@ -5,7 +5,6 @@
 # Copyright Mikko Kursula 2022. MIT license. 
 ################################################################################
 
-
 # General
 import numpy as np
 import pandas as pd
@@ -29,39 +28,29 @@ class PredictionModel(nn.Module):
                 ):
         super().__init__()
 
-        self.input_length = input_length
-        self.input_signals = input_signals
-        self.hidden_layer_neurons = hidden_layer_neurons
-        self.hidden_layer_n = hidden_layer_n
-        self.output_length = output_length
-        
         layers = []
 
         # Input
-        input_len = self.input_length * len(self.input_signals)
+        input_len = input_length * len(input_signals)
         layers.append(nn.Flatten())
         layers.append(nn.Linear(input_len, input_len))
         prev_layer_neuron_n = input_len
         
         # Hidden layers
-        if self.hidden_layer_n > 0:
-            
-            # Add neuron counts if not specified by user
-            while len(self.hidden_layer_neurons) < self.hidden_layer_n:
-                self.hidden_layer_neurons.append(input_len)
+        if hidden_layer_n > 0:
             
             # Add first ReLU layer
             layers.append(nn.ReLU())
             
             # Add the hidden layers
-            for i in range(self.hidden_layer_n): 
-                this_layer_neuron_n = self.hidden_layer_neurons[i]
+            for i in range(hidden_layer_n): 
+                this_layer_neuron_n = hidden_layer_neurons[i]
                 layers.append(nn.Linear(prev_layer_neuron_n, this_layer_neuron_n))
                 layers.append(nn.ReLU())
                 prev_layer_neuron_n = this_layer_neuron_n
 
         # Output
-        output_len = self.output_length
+        output_len = output_length
         layers.append(nn.Linear(prev_layer_neuron_n, output_len))
         self.model = nn.Sequential(*layers)
 
@@ -381,7 +370,9 @@ class PredictLite:
         random_seed: int = None, 
         verbose: bool = True
     ): 
-                
+
+        self.__version__ = 0.2
+
         self.input_signals = input_signals
         self.input_length = input_length
         self.output_signal = output_signal
@@ -414,7 +405,10 @@ class PredictLite:
                 if preproc not in preproc_options:
                     raise ValueError('Invalid preprocessing "{}" for signal "{}"'.format(preproc, col))
                 
-        self.__version__ = 0.2
+        # Model parameter parsing 
+        # Add neuron counts if not specified by user
+        while len(self.hidden_layer_neurons) < self.hidden_layer_n:
+            self.hidden_layer_neurons.append(self.input_len)
         
     
     def pipeline_init(self) -> None: 
