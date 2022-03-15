@@ -1,10 +1,10 @@
 # PredictLite
 
-PredictLite is a lightweight timeseries data prediction framework that builds on top of popular PyTorch and Pandas frameworks. 
+PredictLite is a lightweight timeseries data prediction framework that builds on top of popular PyTorch and Pandas packages. 
 
 ## Features
 
-PredictLite can perform linear regression and nonlinear (deep neural network) regression using one or more input signals to predict one output signal. Linear regression is implemented as two layer neural network without any nonlinear activations or hidden layers. 
+PredictLite can perform linear regression and nonlinear (deep neural network) regression using one or more input signals to predict one or more output signal. Linear regression is implemented as two layer neural network without any nonlinear activations or hidden layers. 
 
 It has basic capabilities for data resampling, NaN/Null value imputation and data preprocessing. All such features are built in to minimize the application development effort. 
 
@@ -14,19 +14,21 @@ Copy the file predictlite.py into your project and integrate it following the ex
 
 ## Data 
 
-Pandas DataFrame format is supported. The DataFrame must have timestamp index. Input signals must be organized into columns. 
-Predictions are provided in a similar DataFrame format.
+Pandas DataFrame format is supported. The DataFrame must have timestamp index. Input signals must be organized into columns. Predictions are provided in a similar DataFrame format.
 
 ## Model setup 
 
 The PredictLite class initialization takes the following input parameters.
 
-Mandatory parameters:
+Mandatory parameters when setting up a new model:
 - input_signals: list of column names that specify the model input signals. 
 - input_length: number of time steps to be used in model input. Same length is applied to all inputs.  
-- output_signal: column name (string) of the signal that is to be predicted. Must be one of the inputs.
+- output_signals: list of columns that are to be predicted. These must be also in input signals. 
 - output_length: number of time steps to be predicted. Uses same sample period as the inputs. 
-- data_sample_period: specifies the data sample period in seconds (float). This is used to generate the prediction timestamps. Also used in data resampling. 
+- data_sample_period: specifies the data sample period in seconds (float). This is used to generate the prediction timestamps. Also used in data resampling.
+
+Mandatory parameters when using a saved model: 
+- load_from_file: string path to saved model. All necessary parameters will be fethecd from the file.
 
 Optional parameters:
 - resample_data: enable/disable data resampling. Set True if the data can contain missing timestamps or if the timestamps shall be rounded to a specific period.
@@ -51,11 +53,9 @@ Inference is run using the PredictLite.predict method. It takes two parameters a
 - dataset in Pandas DataFrame format (same requirements as in model training case). 
 - timestamp for the last datapoint to be used in model input. If not given, the prediction will be based on the data at the end of the dataset. 
 
-Returns a DataFrame containing the prediction. 
+Returns a DataFrame containing the predictions. 
 
 ## Model save and load
 PredictLite saves all configuration parameters and neural network parameters to single file. 
 
 Save the trained model by running save method. Takes filename as parameter. 
-
-Loading a model: First generate a new PredictLite instance. No parameter configurations are necessary. Then run the load method with filename as parameter. It loads all the configurations and model parameters from the file.  

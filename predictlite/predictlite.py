@@ -24,10 +24,14 @@ class PredictionModel(nn.Module):
                  input_signals,
                  hidden_layer_neurons,
                  hidden_layer_n, 
-                 output_length
+                 output_length,
+                 output_signals
                 ):
         super().__init__()
-
+        
+        self.output_length = output_length
+        self.output_signals = output_signals
+        
         layers = []
 
         # Input
@@ -41,7 +45,7 @@ class PredictionModel(nn.Module):
             
             # Add first ReLU layer
             layers.append(nn.ReLU())
-            
+
             # Add the hidden layers
             for i in range(hidden_layer_n): 
                 this_layer_neuron_n = hidden_layer_neurons[i]
@@ -50,12 +54,9 @@ class PredictionModel(nn.Module):
                 prev_layer_neuron_n = this_layer_neuron_n
 
         # Output
-        output_len = output_length
+        output_len = output_length * len(output_signals)
         layers.append(nn.Linear(prev_layer_neuron_n, output_len))
         self.model = nn.Sequential(*layers)
-
-        # Loss
-        self.loss_func = nn.MSELoss()
             
             
     def forward(self, x: torch.tensor) -> torch.tensor:
@@ -71,16 +72,17 @@ class PredictionModel(nn.Module):
         """
         Training loss function. 
         """
-        return self.loss_func(y_pred, y_true)
+        loss = nn.MSELoss()
+        return loss(y_pred, y_true)
 
     
-    def predict(self, x: torch.tensor) -> np.ndarray: 
+    def predict(self, x: torch.tensor) -> torch.tensor: 
         """
         Inference processing. 
         """
         self.model.eval()
         with torch.no_grad():
-            y_pred = self.model(x.unsqueeze(0)).detach()[0].numpy()
+            y_pred = self.model(x.unsqueeze(0)).detach()[0]
         return y_pred
 
 
@@ -139,7 +141,7 @@ class PredictionModelTrainer:
             for data, target in train_loader:
                 self.optimizer.zero_grad()
                 output = self.model.forward(data)
-                loss = self.model.loss(output, target)
+                loss = self.model.loss(output, target)     
                 loss.backward()
                 self.optimizer.step()
                 epoch_losses.append(loss.item())
@@ -171,15 +173,15 @@ class PredictionModelUtils:
                  input_length: int, 
                  input_signals: list,
                  output_length: int, 
-                 output_signal: str,
+                 output_signals: list,
                 ):
         self.input_length = input_length
         self.input_signals = input_signals
         self.output_length = output_length 
-        self.output_signal = output_signal
+        self.output_signals = output_signals
 
     
-    def create_input_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp): 
+    def create_input_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp) -> torch.tensor: 
         """
         Covert dataframe data to a Torch tensor in model input configuration. 
         Timestamp gives the last row in input data. 
@@ -192,7 +194,7 @@ class PredictionModelUtils:
         return input_tensor
     
     
-    def create_target_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp): 
+    def create_target_tensor(self, data: pd.DataFrame, timestamp: pd.Timestamp) -> torch.tensor: 
         """
         Covert dataframe data to a Torch tensor in model output configuration. 
         Timestamp gives the last row in input data. 
@@ -201,10 +203,16 @@ class PredictionModelUtils:
         ts_start = data.index[i_start] 
         i_end = i_start + self.output_length - 1
         ts_end = data.index[i_end]
-        target_values = data.loc[ts_start : ts_end, self.output_signal].values
+        target_values = data.loc[ts_start : ts_end, self.output_signals].values.flatten(order='F')
         target_tensor = torch.from_numpy(target_values).float()                          
         return target_tensor
     
+    
+    def parse_prediction_from_tensor(self, output_tensor: torch.tensor) -> pd.DataFrame:
+        values = output_tensor.numpy().reshape((self.output_length, len(self.output_signals)), order='F')
+        pred = pd.DataFrame(data=values, columns=self.output_signals)
+        return pred
+
     
     def create_samples(self, data: pd.DataFrame, sample_count : int) -> list:
         """
@@ -257,7 +265,7 @@ class DataPreAndPostProcessor:
                  interpolate_nan: bool,
                  zerofill_nan: bool,
                  input_preprocessing: dict, 
-                 output_signal: str,
+                 output_signals: list,
                 ):
 
         self.input_signals = input_signals
@@ -266,7 +274,7 @@ class DataPreAndPostProcessor:
         self.interpolate_nan = interpolate_nan
         self.zerofill_nan = zerofill_nan
         self.input_preprocessing = input_preprocessing
-        self.output_signal = output_signal
+        self.output_signals = output_signals
         
         self.preproc_stats = {}
         self.eps = 1e-12
@@ -322,20 +330,24 @@ class DataPreAndPostProcessor:
         return proc_data
     
     
-    def postprocess(self, data: np.ndarray) -> np.ndarray: 
+    def postprocess(self, data: pd.DataFrame) -> pd.DataFrame: 
         """
         Post-process the prediction results, i.e. scale the values back to original scale. 
+        Outputs share the same preprocessing with inputs. 
         """
-        col = self.output_signal
-        if self.input_preprocessing[col] == 'minmax':
-            min_val = self.preproc_stats['signal_min_values'][col]
-            max_val = self.preproc_stats['signal_max_values'][col]
-            data = data * (max_val - min_val) + min_val
-        elif self.input_preprocessing[col] == 'z-norm':
-            mean_val = self.preproc_stats['signal_mean_values'][col]
-            std_val = self.preproc_stats['signal_std_values'][col]
-            data = data * std_val + mean_val
-        return data
+        proc_data = data.copy()
+        
+        for col in self.output_signals:
+            if self.input_preprocessing[col] == 'minmax':
+                min_val = self.preproc_stats['signal_min_values'][col]
+                max_val = self.preproc_stats['signal_max_values'][col]
+                proc_data[col] = proc_data[col] * (max_val - min_val) + min_val
+            elif self.input_preprocessing[col] == 'z-norm':
+                mean_val = self.preproc_stats['signal_mean_values'][col]
+                std_val = self.preproc_stats['signal_std_values'][col]
+                proc_data[col] = proc_data[col] * std_val + mean_val
+
+        return proc_data
 
     
     def get_params(self) -> dict: 
@@ -350,9 +362,10 @@ class PredictLite:
     
     def __init__(
         self,
+        load_from_file: str = None,
         input_signals: list = None, 
         input_length: int = None, 
-        output_signal: str = None,
+        output_signals: list = None,
         output_length: int = None, 
         resample_data: bool = False,
         data_sample_period: float = None, 
@@ -371,11 +384,12 @@ class PredictLite:
         verbose: bool = True
     ): 
 
-        self.__version__ = 0.2
+        self.__version__ = 0.3
 
+        self.load_from_file = load_from_file
         self.input_signals = input_signals
         self.input_length = input_length
-        self.output_signal = output_signal
+        self.output_signals = output_signals
         self.output_length = output_length 
         self.resample_data = resample_data
         self.data_sample_period = data_sample_period
@@ -393,22 +407,46 @@ class PredictLite:
         self.random_seed = random_seed
         self.verbose = verbose
 
+        if self.load_from_file is not None:
+            self.load(self.load_from_file)
+            self.check_and_parse_args()
+        else: 
+            self.check_and_parse_args()
+            self.pipeline_init()
+        
+        
+    def check_and_parse_args(self) -> None: 
+        
+        if (self.load_from_file is None) and (self.input_signals is None): 
+            raise ValueError('Mandatory arguments or load_from_file not specified.')
+        
+        # Check inputs and outputs
+        if len(self.input_signals) == 0: 
+            raise ValueError('No input signals specified')
+        if len(self.output_signals) == 0: 
+            raise ValueError('No output signals specified')
+            
+        # Check that all outputs are also in inputs. 
+        for col in self.output_signals:
+            if col not in self.input_signals: 
+                raise ValueError('Signal {} not specified as input.'.format(col))        
+        
         # Check the given parameters and setup default method if parameters are not given. 
         if self.input_preprocessing is None: 
             self.input_preprocessing = {}
-        if self.input_signals is not None: 
-            for col in self.input_signals: 
-                if col not in self.input_preprocessing.keys():
-                    self.input_preprocessing[col] = 'none'
-            preproc_options = DataPreAndPostProcessor.proc_options
-            for col, preproc in self.input_preprocessing.items():
-                if preproc not in preproc_options:
-                    raise ValueError('Invalid preprocessing "{}" for signal "{}"'.format(preproc, col))
+        for col in self.input_signals: 
+            if col not in self.input_preprocessing.keys():
+                self.input_preprocessing[col] = 'none'
+
+        # Check that given preprocessing is available
+        for col, preproc in self.input_preprocessing.items():
+            if preproc not in DataPreAndPostProcessor.proc_options:
+                raise ValueError('Invalid preprocessing "{}" for signal "{}"'.format(preproc, col))
                 
-        # Model parameter parsing 
-        # Add neuron counts if not specified by user
+        # Model parameter parsing. Add default neuron counts if not specified by user.
         while len(self.hidden_layer_neurons) < self.hidden_layer_n:
-            self.hidden_layer_neurons.append(self.input_len)
+            default_neuron_n = self.input_length * len(self.input_signals)
+            self.hidden_layer_neurons.append(default_neuron_n)
         
     
     def pipeline_init(self) -> None: 
@@ -418,7 +456,8 @@ class PredictLite:
             self.input_signals,
             self.hidden_layer_neurons,
             self.hidden_layer_n, 
-            self.output_length
+            self.output_length,
+            self.output_signals
         )
         
         self.model_trainer = PredictionModelTrainer(
@@ -432,7 +471,7 @@ class PredictLite:
             self.input_length,
             self.input_signals,
             self.output_length,
-            self.output_signal
+            self.output_signals
         )
         
         self.data_preproc = DataPreAndPostProcessor(
@@ -442,7 +481,7 @@ class PredictLite:
              self.interpolate_nan,
              self.zerofill_nan,
              self.input_preprocessing, 
-             self.output_signal
+             self.output_signals
         )
  
 
@@ -462,15 +501,14 @@ class PredictLite:
             torch.manual_seed(self.random_seed)
         
         # Initialize neural network
-        self.logging('Setting up the model')
-        self.pipeline_init()
+        self.logging('Setting up preprocessing')
         
         # Fit preprocessing 
         self.data_preproc.fit(data)
         
         # Preprocess the data
         proc_data = self.data_preproc.preprocess(data)        
-        self.logging('Preprocessing done')
+        self.logging('Building dataset')
         
         # Create training dataset
         split_i = int(len(proc_data) * self.train_test_split)
@@ -486,7 +524,6 @@ class PredictLite:
             batch_size=self.batch_size, 
             shuffle=True
         )
-        self.logging('Training samples created')
 
         # Create testing dataset
         test_inputs, test_targets = self.model_utils.create_samples(
@@ -501,7 +538,6 @@ class PredictLite:
             batch_size=self.batch_size, 
             shuffle=False
         )
-        self.logging('Testing samples created')
 
         # Fit the neural network
         self.logging('Training the model')
@@ -528,17 +564,16 @@ class PredictLite:
         proc_data = self.data_preproc.preprocess(data.loc[ts_start : ts_end, self.input_signals])
         input_tensor = self.model_utils.create_input_tensor(proc_data, ts_end)
         
-        # Make prediction
+        # Make prediction and process it to original scale
         prediction = self.model.predict(input_tensor)
-        
-        # Scale 
+        prediction = self.model_utils.parse_prediction_from_tensor(prediction)
         prediction = self.data_preproc.postprocess(prediction)
         
-        # Create dataframe for results
+        # Add timestamps to prediction
         period = timedelta(seconds=self.data_sample_period)
-        ts_index = [ts_end + (1 + i) * period for i in range(self.output_length)]        
-        pred_df = pd.DataFrame(index=ts_index, data={self.output_signal : prediction})
-        return pred_df
+        ts_index = pd.Series([ts_end + (1 + i) * period for i in range(self.output_length)])       
+        prediction = prediction.set_index(ts_index)
+        return prediction
 
     
     def get_params(self) -> dict:
@@ -560,7 +595,6 @@ class PredictLite:
         Save parameters to file.  
         """
         params = {}
-        
         params['instance_params'] = self.get_params()
         params['preproc_params'] = self.data_preproc.get_params()
         
