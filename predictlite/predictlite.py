@@ -22,49 +22,69 @@ class PredictionModel(nn.Module):
     def __init__(self, 
                  input_length, 
                  input_signals,
+                 embedding_dims,
                  hidden_layer_neurons,
                  hidden_layer_n, 
                  output_length,
                  output_signals
                 ):
         super().__init__()
-        
+                
+        # Embedding dims is in [[num_embeddings, embedding_dim, name], ...] format 
+        self.embedding_dims = embedding_dims
+        self.input_length = input_length
+        self.input_signals = input_signals
         self.output_length = output_length
         self.output_signals = output_signals
         
-        layers = []
-
-        # Input
-        input_len = input_length * len(input_signals)
-        layers.append(nn.Flatten())
-        layers.append(nn.Linear(input_len, input_len))
-        prev_layer_neuron_n = input_len
-        
-        # Hidden layers
-        if hidden_layer_n > 0:
+        # Define embedding inputs
+        self.embedding_layers = []
+        if embedding_dims is not None: 
+            self.use_embeddings = True
+            for emb in embedding_dims: 
+                self.embedding_layers.append(nn.Embedding(emb[0], emb[1]))
+        else: 
+            self.use_embeddings = False
             
-            # Add first ReLU layer
-            layers.append(nn.ReLU())
+        # Define size of first hidden layer input
+        input_size = input_length * len(input_signals)
+        if self.use_embeddings: 
+            for emb in embedding_dims: 
+                input_size += emb[1]
+        
+        prev_layer_neuron_n = input_size
 
-            # Add the hidden layers
-            for i in range(hidden_layer_n): 
-                this_layer_neuron_n = hidden_layer_neurons[i]
-                layers.append(nn.Linear(prev_layer_neuron_n, this_layer_neuron_n))
-                layers.append(nn.ReLU())
-                prev_layer_neuron_n = this_layer_neuron_n
+        # MLP layers
+        self.mlp_layers = []
+        for hid_size in hidden_layer_neurons:
+            if hid_size is None: 
+                this_layer_neuron_n = prev_layer_neuron_n
+            else:
+                this_layer_neuron_n = hid_size
+            self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, this_layer_neuron_n))
+            self.mlp_layers.append(nn.ReLU())
+            prev_layer_neuron_n = this_layer_neuron_n
 
         # Output
-        output_len = output_length * len(output_signals)
-        layers.append(nn.Linear(prev_layer_neuron_n, output_len))
-        self.model = nn.Sequential(*layers)
+        output_size = output_length * len(output_signals)
+        self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, output_size))
+        self.model = nn.Sequential(*self.mlp_layers)
             
             
     def forward(self, x: torch.tensor) -> torch.tensor:
         """
         Training forward pass. 
         Not used in inference phase. 
-        """
-        y_pred = self.model(x)
+        """        
+        inputs = [x[0]]
+        if self.use_embeddings:
+            for i, emb_input in enumerate(x[1:]):
+                emb_vec = self.embedding_layers[i](emb_input)
+                emb_vec = torch.squeeze(emb_vec)
+                inputs.append(emb_vec)
+            inputs = torch.cat(inputs, dim=-1)
+            
+        y_pred = self.model(inputs)    
         return y_pred
     
     
@@ -80,9 +100,17 @@ class PredictionModel(nn.Module):
         """
         Inference processing. 
         """
+        inputs = [x[0]]
+        if self.use_embeddings:
+            for i, emb_input in enumerate(x[1:]):
+                emb_vec = self.embedding_layers[i](emb_input)
+                emb_vec = torch.squeeze(emb_vec)
+                inputs.append(emb_vec)
+            inputs = torch.cat(inputs, dim=-1)
+
         self.model.eval()
         with torch.no_grad():
-            y_pred = self.model(x.unsqueeze(0)).detach()[0]
+            y_pred = self.model(inputs.unsqueeze(0)).detach()[0]
         return y_pred
 
 
@@ -96,10 +124,28 @@ class PredictionModel(nn.Module):
         self.load_state_dict(torch.load(fn))
 
         
+    def print_summary(self) -> None: 
+        print('Inputs:')
+        for input_signal in self.input_signals: 
+            print('\t{}: {}'.format(input_signal, self.input_length))
+        if self.use_embeddings: 
+            for i, emb in enumerate(self.embedding_dims):
+                print('\t{}: {}'.format(emb[2], self.embedding_layers[i]))
+                
+        print('MLP:')
+        for layer in self.mlp_layers: 
+            print('\t{}'.format(layer))
+            
+        print('Outputs:')
+        for output_signal in self.output_signals: 
+            print('\t{}: {}'.format(output_signal, self.output_length))
+
+            
+        
 class PredictionDataset(torch.utils.data.Dataset):
     
-    def __init__(self, float_inputs, targets):
-        self.float_inputs = float_inputs
+    def __init__(self, inputs, targets):
+        self.inputs = inputs
         self.targets = targets
             
             
@@ -108,7 +154,7 @@ class PredictionDataset(torch.utils.data.Dataset):
     
     
     def __getitem__(self, idx):
-        return self.float_inputs[idx], self.targets[idx]
+        return self.inputs[idx], self.targets[idx]
 
     
 class PredictionModelTrainer:
@@ -174,11 +220,13 @@ class PredictionModelUtils:
                  input_signals: list,
                  output_length: int, 
                  output_signals: list,
+                 datetime_embeddings: list, 
                 ):
         self.input_length = input_length
         self.input_signals = input_signals
         self.output_length = output_length 
         self.output_signals = output_signals
+        self.datetime_embeddings = datetime_embeddings
 
     
     def create_input_tensor(self, data: pd.DataFrame, timestamp : pd.Timestamp) -> torch.tensor: 
@@ -186,12 +234,20 @@ class PredictionModelUtils:
         Covert dataframe data to a Torch tensor in model input configuration. 
         Timestamp gives the last row in input data. 
         """
+        input_tensors = []
+        
+        # Float values
         i_end = data.index.get_loc(timestamp, method='pad')
         i_start = i_end - self.input_length + 1
         ts_start = data.index[i_start]
-        input_values = data.loc[ts_start : timestamp, self.input_signals].values
-        input_tensor = torch.from_numpy(input_values).float().permute(1, 0)                           
-        return input_tensor
+        input_values = data.loc[ts_start : timestamp, self.input_signals].values.flatten(order='F')
+        input_tensors.append(torch.from_numpy(input_values).float())
+        
+        # Embeddings 
+        for emb in self.datetime_embeddings:
+            dtvalue = torch.LongTensor([data.loc[timestamp, emb]])
+            input_tensors.append(dtvalue)
+        return input_tensors
     
     
     def create_target_tensor(self, data: pd.DataFrame, timestamp: pd.Timestamp) -> torch.tensor: 
@@ -257,6 +313,7 @@ class PredictionModelUtils:
 class DataPreAndPostProcessor:
 
     proc_options = ['minmax', 'z-norm', 'none']
+    datetime_emb_options = ['year', 'month', 'day_of_week', 'hour', 'minute']
     
     def __init__(self,
                  input_signals: list,
@@ -265,6 +322,7 @@ class DataPreAndPostProcessor:
                  interpolate_nan: bool,
                  zerofill_nan: bool,
                  input_preprocessing: dict, 
+                 datetime_embeddings: list, 
                  output_signals: list,
                 ):
 
@@ -274,6 +332,7 @@ class DataPreAndPostProcessor:
         self.interpolate_nan = interpolate_nan
         self.zerofill_nan = zerofill_nan
         self.input_preprocessing = input_preprocessing
+        self.datetime_embeddings = datetime_embeddings
         self.output_signals = output_signals
         
         self.preproc_stats = {}
@@ -326,7 +385,20 @@ class DataPreAndPostProcessor:
                 mean_val = self.preproc_stats['signal_mean_values'][col]
                 std_val = self.preproc_stats['signal_std_values'][col]
                 proc_data[col] = (proc_data[col] - mean_val) / (std_val + self.eps)
-
+                
+        # Datetime embeddings
+        for emb in self.datetime_embeddings: 
+            if emb == 'year':
+                proc_data[emb] = proc_data.index.year
+            if emb == 'month':
+                proc_data[emb] = proc_data.index.month
+            if emb == 'day_of_week':
+                proc_data[emb] = proc_data.index.dayofweek
+            if emb == 'hour':
+                proc_data[emb] = proc_data.index.hour
+            if emb == 'minute':
+                proc_data[emb] = proc_data.index.minute
+            
         return proc_data
     
     
@@ -370,8 +442,10 @@ class PredictLite:
         resample_data: bool = False,
         data_sample_period: float = None, 
         hidden_layer_n: int = 0,
-        hidden_layer_neurons: list = [],
+        hidden_layer_neurons: list = None,
         input_preprocessing: dict = None,
+        datetime_embeddings: list = None,
+        datetime_embedding_dim: int = 20,
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
         train_sample_n: int = None,
@@ -396,6 +470,8 @@ class PredictLite:
         self.hidden_layer_n = hidden_layer_n
         self.hidden_layer_neurons = hidden_layer_neurons
         self.input_preprocessing = input_preprocessing
+        self.datetime_embeddings = datetime_embeddings
+        self.datetime_embedding_dim = datetime_embedding_dim
         self.zerofill_nan = zerofill_nan
         self.interpolate_nan = interpolate_nan
         self.train_sample_n = train_sample_n
@@ -420,18 +496,27 @@ class PredictLite:
         if (self.load_from_file is None) and (self.input_signals is None): 
             raise ValueError('Mandatory arguments or load_from_file not specified.')
         
-        # Check inputs and outputs
-        if len(self.input_signals) == 0: 
+        # Check mandatory args
+        if self.input_signals is None: 
             raise ValueError('No input signals specified')
-        if len(self.output_signals) == 0: 
+        if self.output_signals is None: 
             raise ValueError('No output signals specified')
+        if self.input_length is None: 
+            raise ValueError('No input length specified')
+        if self.output_length is None: 
+            raise ValueError('No output length specified')
+        if self.data_sample_period is None: 
+            raise ValueError('No data sample period specified')
+        if self.datetime_embedding_dim <= 0: 
+            raise ValueError('Datetime embedding dim cannot be zero or negative')
+
             
         # Check that all outputs are also in inputs. 
         for col in self.output_signals:
             if col not in self.input_signals: 
                 raise ValueError('Signal {} not specified as input.'.format(col))        
         
-        # Check the given parameters and setup default method if parameters are not given. 
+        # Check the given preprocessing parameters and setup default method if parameters are not given. 
         if self.input_preprocessing is None: 
             self.input_preprocessing = {}
         for col in self.input_signals: 
@@ -443,50 +528,84 @@ class PredictLite:
             if preproc not in DataPreAndPostProcessor.proc_options:
                 raise ValueError('Invalid preprocessing "{}" for signal "{}"'.format(preproc, col))
                 
-        # Model parameter parsing. Add default neuron counts if not specified by user.
-        while len(self.hidden_layer_neurons) < self.hidden_layer_n:
-            default_neuron_n = self.input_length * len(self.input_signals)
-            self.hidden_layer_neurons.append(default_neuron_n)
-        
-    
+        # Check that given datetime embeddings are available
+        if self.datetime_embeddings is not None: 
+            for emb in self.datetime_embeddings:
+                if emb not in DataPreAndPostProcessor.datetime_emb_options:
+                    raise ValueError('Invalid datetime embedding {}'.format(emb))
+        else: 
+            self.datetime_embeddings = []
+            
+        # Define embedding vector dimensions.
+        # The format is for each embedding [num_embeddings, embedding_dim, name].
+        self.embedding_dims = []
+        for emb in self.datetime_embeddings:
+            if emb == 'year':
+                num_embeddings = 2100 # Assuming that year is always between 0 and 2100
+            if emb == 'month':
+                num_embeddings = 13
+            if emb == 'day_of_week':
+                num_embeddings = 7 
+            if emb == 'hour':
+                num_embeddings = 24
+            if emb == 'minute':
+                num_embeddings = 60
+            
+            emb_dim = [num_embeddings, self.datetime_embedding_dim, emb]
+            self.embedding_dims.append(emb_dim)
+            
+                
+        # Model parameter parsing and checking
+        if self.hidden_layer_neurons is not None:
+            if len(self.hidden_layer_neurons) != self.hidden_layer_n:
+                raise ValueError('Mismatch between hidden_layer_neurons and hidden_layer_n.')
+        else: 
+            # Fill the list with None values that makes the model use input layer size for 
+            # hidden layer sizes. 
+            self.hidden_layer_neurons = [None for _ in range(self.hidden_layer_n)]
+
+            
     def pipeline_init(self) -> None: 
         
         self.model = PredictionModel(
-            self.input_length, 
-            self.input_signals,
-            self.hidden_layer_neurons,
-            self.hidden_layer_n, 
-            self.output_length,
-            self.output_signals
+            input_length=self.input_length, 
+            input_signals=self.input_signals,
+            embedding_dims=self.embedding_dims,
+            hidden_layer_neurons=self.hidden_layer_neurons,
+            hidden_layer_n=self.hidden_layer_n, 
+            output_length=self.output_length,
+            output_signals=self.output_signals
         )
-        
+
         self.model_trainer = PredictionModelTrainer(
-            self.model, 
-            self.learning_rate, 
-            self.epochs, 
-            self.logging
+            model=self.model, 
+            learning_rate=self.learning_rate, 
+            epochs=self.epochs, 
+            logging=self.logging
         )
-        
+
         self.model_utils = PredictionModelUtils(
-            self.input_length,
-            self.input_signals,
-            self.output_length,
-            self.output_signals
+            input_length=self.input_length,
+            input_signals=self.input_signals,
+            output_length=self.output_length,
+            output_signals=self.output_signals,
+            datetime_embeddings=self.datetime_embeddings
         )
-        
+
         self.data_preproc = DataPreAndPostProcessor(
-             self.input_signals,
-             self.resample_data, 
-             self.data_sample_period,
-             self.interpolate_nan,
-             self.zerofill_nan,
-             self.input_preprocessing, 
-             self.output_signals
+            input_signals=self.input_signals,
+            resample_data=self.resample_data, 
+            data_sample_period=self.data_sample_period,
+            interpolate_nan=self.interpolate_nan,
+            zerofill_nan=self.zerofill_nan,
+            input_preprocessing=self.input_preprocessing,
+            datetime_embeddings=self.datetime_embeddings,
+            output_signals=self.output_signals
         )
- 
+
 
     def model_summary(self) -> None: 
-        print(self.model)
+        self.model.print_summary()
         
 
     def fit(self, data: pd.DataFrame) -> None:
