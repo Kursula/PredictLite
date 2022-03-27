@@ -16,475 +16,30 @@ from typing import Callable
 import torch
 import torch.nn as nn
 
-        
-class PredictionModel(nn.Module):
+# PredictLite modules 
+from predictlite.model import PredictionModel
+from predictlite.model_trainer import PredictionModelTrainer
+from predictlite.utils import PredictionDataset, PredictionModelUtils, parse_embedding_mapping
+from predictlite.data_processor import DataPreAndPostProcessor
 
-    def __init__(self, 
-                 input_length, 
-                 input_signals,
-                 embeddings,
-                 embedding_map,
-                 hidden_layer_neurons,
-                 hidden_layer_n, 
-                 output_length,
-                 output_signals
-                ):
-        super().__init__()
-                
-        self.embeddings = embeddings
-        self.embedding_map = embedding_map
-        self.input_length = input_length
-        self.input_signals = input_signals
-        self.output_length = output_length
-        self.output_signals = output_signals
-        
-        # Define embedding inputs
-        self.embedding_layers = []
-        if embeddings is not None: 
-            self.use_embeddings = True
-            for emb in embeddings:
-                dim = self.embedding_map[emb]['dim']
-                # OOD embedding has always the highest value. 
-                num = self.embedding_map[emb]['ood'] + 1
-                self.embedding_layers.append(nn.Embedding(num, dim))
-        else: 
-            self.use_embeddings = False
-            
-        # Define size of first hidden layer input
-        input_size = input_length * len(input_signals)
-        if self.use_embeddings: 
-            for emb in embeddings: 
-                input_size += self.embedding_map[emb]['dim'] 
-        
-        prev_layer_neuron_n = input_size
-
-        # MLP layers
-        self.mlp_layers = []
-        for hid_size in hidden_layer_neurons:
-            if hid_size is None: 
-                this_layer_neuron_n = prev_layer_neuron_n
-            else:
-                this_layer_neuron_n = hid_size
-            self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, this_layer_neuron_n))
-            self.mlp_layers.append(nn.ReLU())
-            prev_layer_neuron_n = this_layer_neuron_n
-
-        # Output
-        output_size = output_length * len(output_signals)
-        self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, output_size))
-        self.model = nn.Sequential(*self.mlp_layers)
-            
-            
-    def forward(self, x: torch.tensor) -> torch.tensor:
-        """
-        Training forward pass. 
-        Not used in inference phase. 
-        """        
-        inputs = [x[0]]
-        if self.use_embeddings:
-            for i, emb_input in enumerate(x[1:]):
-                emb_vec = self.embedding_layers[i](emb_input)
-                emb_vec = torch.squeeze(emb_vec)
-                inputs.append(emb_vec)
-            inputs = torch.cat(inputs, dim=-1)
-            
-        y_pred = self.model(inputs)    
-        return y_pred
-    
-    
-    def loss(self, y_pred, y_true): 
-        """
-        Training loss function. 
-        """
-        loss = nn.MSELoss()
-        return loss(y_pred, y_true)
-
-    
-    def predict(self, x: torch.tensor) -> torch.tensor: 
-        """
-        Inference processing. 
-        """
-        inputs = [x[0]]
-        if self.use_embeddings:
-            for i, emb_input in enumerate(x[1:]):
-                emb_vec = self.embedding_layers[i](emb_input)
-                emb_vec = torch.squeeze(emb_vec)
-                inputs.append(emb_vec)
-            inputs = torch.cat(inputs, dim=-1)
-
-        self.model.eval()
-        with torch.no_grad():
-            y_pred = self.model(inputs.unsqueeze(0)).detach()[0]
-        return y_pred
-
-
-    def save(self, filename: str) -> None: 
-        fn = filename.split('.')[0] + '.model'
-        torch.save(self.state_dict(), fn)
-            
-    
-    def load(self, filename: str) -> None: 
-        fn = filename.split('.')[0] + '.model'
-        self.load_state_dict(torch.load(fn))
-
-        
-    def print_summary(self) -> None: 
-        print('Inputs:')
-        for input_signal in self.input_signals: 
-            print('\t{}: {}'.format(input_signal, self.input_length))
-        if self.use_embeddings: 
-            for i, emb in enumerate(self.embeddings):
-                print('\t{}: {}'.format(emb, self.embedding_layers[i]))
-                
-        print('MLP:')
-        for layer in self.mlp_layers: 
-            print('\t{}'.format(layer))
-            
-        print('Outputs:')
-        for output_signal in self.output_signals: 
-            print('\t{}: {}'.format(output_signal, self.output_length))
-
-            
-        
-class PredictionDataset(torch.utils.data.Dataset):
-    
-    def __init__(self, inputs, targets):
-        self.inputs = inputs
-        self.targets = targets
-            
-            
-    def __len__(self):
-        return len(self.targets)
-    
-    
-    def __getitem__(self, idx):
-        return self.inputs[idx], self.targets[idx]
-
-    
-class PredictionModelTrainer:
-    
-    def __init__(self, 
-                 model: PredictionModel, 
-                 learning_rate: float, 
-                 epochs: int, 
-                 logging: Callable
-                ): 
-        
-        self.model = model
-        self.learning_rate = learning_rate
-        self.epochs = epochs
-        self.logging = logging
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
-
-    
-    def fit(self, train_loader, test_loader) -> None:
-        """
-        Neural network model training and testing. 
-        """
-        train_losses = []
-        test_losses = []
-        
-        for epoch in range(self.epochs):
-            # Training loop 
-            self.model.train()
-            epoch_losses = []
-            for data, target in train_loader:
-                self.optimizer.zero_grad()
-                output = self.model.forward(data)
-                loss = self.model.loss(output, target)     
-                loss.backward()
-                self.optimizer.step()
-                epoch_losses.append(loss.item())
-                
-            train_losses.append(np.mean(epoch_losses))
-
-            # Test loop 
-            self.model.eval()
-            epoch_losses = []
-            with torch.no_grad():
-                for data, target in test_loader:
-                    output = self.model.forward(data)
-                    loss = self.model.loss(output, target)
-                    epoch_losses.append(loss.item())
-                    
-            test_losses.append(np.mean(epoch_losses))
-            self.logging('epoch: {:3}, train loss: {:0.5f}, test loss: {:0.5f}'.format(
-                    epoch,
-                    train_losses[-1],
-                    test_losses[-1]
-                )
-            )
-        return train_losses, test_losses
-
-
-class PredictionModelUtils:
-
-    def __init__(self, 
-                 input_length: int, 
-                 input_signals: list,
-                 output_length: int, 
-                 output_signals: list,
-                 datetime_embeddings: list, 
-                 embedding_map: dict,
-                ):
-        self.input_length = input_length
-        self.input_signals = input_signals
-        self.output_length = output_length 
-        self.output_signals = output_signals
-        self.datetime_embeddings = datetime_embeddings
-        self.embedding_map = embedding_map
-
-    
-    def create_input_tensor(self, 
-                            data: pd.DataFrame, 
-                            timestamp: pd.Timestamp, 
-                            force_ood: bool = False
-                           ) -> torch.tensor: 
-        """
-        Covert dataframe data to a Torch tensor in model input configuration. 
-        Timestamp gives the last row in input data. 
-        """
-        input_tensors = []
-        
-        # Float values
-        i_end = data.index.get_loc(timestamp, method='pad')
-        i_start = i_end - self.input_length + 1
-        ts_start = data.index[i_start]
-        input_values = data.loc[ts_start : timestamp, self.input_signals].values.flatten(order='F')
-        input_tensors.append(torch.from_numpy(input_values).float())
-        
-        # Embeddings 
-        for emb in self.datetime_embeddings:
-            key = str(int(data.loc[timestamp, emb]))
-            if (key in self.embedding_map[emb]['map'].keys()) and (force_ood == False): 
-                value = self.embedding_map[emb]['map'][key]
-            else: 
-                # Use out-of-distribution embedding. 
-                value = self.embedding_map[emb]['ood']
-            
-            value = torch.LongTensor([value])
-            input_tensors.append(value)
-        return input_tensors
-    
-    
-    def create_target_tensor(self, data: pd.DataFrame, timestamp: pd.Timestamp) -> torch.tensor: 
-        """
-        Covert dataframe data to a Torch tensor in model output configuration. 
-        Timestamp gives the last row in input data. 
-        """
-        i_start = data.index.get_loc(timestamp, method='pad') + 1
-        ts_start = data.index[i_start] 
-        i_end = i_start + self.output_length - 1
-        ts_end = data.index[i_end]
-        target_values = data.loc[ts_start : ts_end, self.output_signals].values.flatten(order='F')
-        target_tensor = torch.from_numpy(target_values).float()                          
-        return target_tensor
-    
-    
-    def parse_prediction_from_tensor(self, output_tensor: torch.tensor) -> pd.DataFrame:
-        values = output_tensor.numpy().reshape((self.output_length, len(self.output_signals)), order='F')
-        pred = pd.DataFrame(data=values, columns=self.output_signals)
-        return pred
-
-    
-    def create_samples(self, data: pd.DataFrame, sample_count: int, embedding_ood_ratio: float = 0) -> list:
-        """
-        Create input and target sample pairs for model training.
-        embedding_ood_ratio: ratio of samples that will be forced to use ood (out of distribution)
-        embeddings in order to train those embeddings. 
-        """
-        inputs = []
-        targets = []
-        
-        # Determine the number of samples to be created and index values to be used. 
-        possible_timestamps = data.index[self.input_length : -self.output_length]
-        
-        if sample_count is None: 
-            # All data is used in training
-            sample_timestamps = possible_timestamps
-        else: 
-            # Random samples are selected for training
-            if len(possible_timestamps) < sample_count: 
-                raise ValueError('Number of samples {} exceeds the amount of data {}.'
-                                 .format(sample_count, len(possible_timestamps)))
-            sample_timestamps = np.random.choice(possible_timestamps, sample_count, replace=False)
-            
-        # Crete samples
-        for timestamp in sample_timestamps:
-            if np.random.rand() < embedding_ood_ratio: 
-                force_ood = True
-            else: 
-                force_ood = False
-                
-            input_tensor = self.create_input_tensor(data, timestamp, force_ood)
-            inputs.append(input_tensor)
-            target_tensor = self.create_target_tensor(data, timestamp)
-            targets.append(target_tensor)
-        
-        return inputs, targets
-
-    
-    def create_data_loader(self, dataset: PredictionDataset, batch_size, shuffle): 
-        # Convert training samples to dataloader format
-        data_loader = torch.utils.data.DataLoader(
-            dataset, 
-            batch_size=batch_size, 
-            shuffle=shuffle
-        )
-        return data_loader
-    
-    
-def parse_embedding_values(datetime_embeddings: list, 
-                           datetime_embedding_dim: int, 
-                           data: pd.DataFrame,
-                          ) -> dict:
-    emb_map = {}
-    for dte in datetime_embeddings: 
-        emb_map[dte] = {'map' : {}, 'ood' : None, 'dim' : datetime_embedding_dim}
-        for i, value in enumerate(data[dte].unique()):
-            emb_map[dte]['map'][str(value)] = i 
-
-        emb_map[dte]['ood'] = i + 1
-
-    return emb_map
-
-
-class DataPreAndPostProcessor:
-
-    proc_options = ['minmax', 'z-norm', 'none']
-    datetime_emb_options = ['year', 'month', 'day_of_week', 'hour', 'minute']
-    
-    def __init__(self,
-                 input_signals: list,
-                 resample_data: bool, 
-                 data_sample_period: float,
-                 interpolate_nan: bool,
-                 zerofill_nan: bool,
-                 input_preprocessing: dict, 
-                 datetime_embeddings: list, 
-                 output_signals: list,
-                ):
-
-        self.input_signals = input_signals
-        self.resample_data = resample_data
-        self.data_sample_period = data_sample_period
-        self.interpolate_nan = interpolate_nan
-        self.zerofill_nan = zerofill_nan
-        self.input_preprocessing = input_preprocessing
-        self.datetime_embeddings = datetime_embeddings
-        self.output_signals = output_signals
-        
-        self.preproc_stats = {}
-        self.eps = 1e-12
-        
-        
-    def fit(self, data: pd.DataFrame) -> None: 
-        """
-        Fit the preprocessing parameters. 
-        """
-
-        # Initialize signal stats dicts 
-        self.preproc_stats['signal_min_values'] = {}
-        self.preproc_stats['signal_max_values'] = {}
-        self.preproc_stats['signal_mean_values'] = {}
-        self.preproc_stats['signal_std_values'] = {}
-        
-        # Calculate stats
-        for col in self.input_signals: 
-            self.preproc_stats['signal_min_values'][col] = data[col].dropna().min()
-            self.preproc_stats['signal_max_values'][col] = data[col].dropna().max()
-            self.preproc_stats['signal_mean_values'][col] = data[col].dropna().mean()
-            self.preproc_stats['signal_std_values'][col] = data[col].dropna().std()
-
-    
-    def preprocess(self, data: pd.DataFrame) -> pd.DataFrame: 
-        """
-        Preprocess the data.
-        """
-        proc_data = data.copy()
-        
-        # Resample
-        if self.resample_data: 
-            proc_data = proc_data.resample('{}s'.format(self.data_sample_period)).mean()
-        
-        # Process NaN values
-        if self.interpolate_nan: 
-            proc_data = proc_data.interpolate()
-        if self.zerofill_nan:
-            proc_data = proc_data.fillna(0)
-        
-        # Scale values
-        for col in self.input_signals: 
-            if self.input_preprocessing[col] == 'minmax':
-                min_val = self.preproc_stats['signal_min_values'][col]
-                max_val = self.preproc_stats['signal_max_values'][col]
-                proc_data[col] = (proc_data[col] - min_val) / (max_val - min_val)
-            
-            elif self.input_preprocessing[col] == 'z-norm':
-                mean_val = self.preproc_stats['signal_mean_values'][col]
-                std_val = self.preproc_stats['signal_std_values'][col]
-                proc_data[col] = (proc_data[col] - mean_val) / (std_val + self.eps)
-                
-        # Datetime embeddings
-        for emb in self.datetime_embeddings: 
-            if emb == 'year':
-                proc_data[emb] = proc_data.index.year
-            if emb == 'month':
-                proc_data[emb] = proc_data.index.month
-            if emb == 'day_of_week':
-                proc_data[emb] = proc_data.index.dayofweek
-            if emb == 'hour':
-                proc_data[emb] = proc_data.index.hour
-            if emb == 'minute':
-                proc_data[emb] = proc_data.index.minute
-            
-        return proc_data
-    
-    
-    def postprocess(self, data: pd.DataFrame) -> pd.DataFrame: 
-        """
-        Post-process the prediction results, i.e. scale the values back to original scale. 
-        Outputs share the same preprocessing with inputs. 
-        """
-        proc_data = data.copy()
-        
-        for col in self.output_signals:
-            if self.input_preprocessing[col] == 'minmax':
-                min_val = self.preproc_stats['signal_min_values'][col]
-                max_val = self.preproc_stats['signal_max_values'][col]
-                proc_data[col] = proc_data[col] * (max_val - min_val) + min_val
-            elif self.input_preprocessing[col] == 'z-norm':
-                mean_val = self.preproc_stats['signal_mean_values'][col]
-                std_val = self.preproc_stats['signal_std_values'][col]
-                proc_data[col] = proc_data[col] * std_val + mean_val
-
-        return proc_data
-
-    
-    def get_params(self) -> dict: 
-        return self.preproc_stats
-    
-    
-    def set_params(self, params: dict) -> None: 
-        self.preproc_stats = params
-    
 
 class PredictLite:
     
     def __init__(
         self,
         load_from_file: str = None,
-        input_signals: list = None, 
-        input_length: int = None, 
+        input_signals: list = None,
+        input_length: int = None,
+        categorical_inputs: list = [],
         output_signals: list = None,
-        output_length: int = None, 
-        resample_data: bool = False,
-        data_sample_period: float = None, 
+        output_length: int = None,
+        data_sample_period: float = None,
         hidden_layer_n: int = 0,
         hidden_layer_neurons: list = None,
         input_preprocessing: dict = None,
-        datetime_embeddings: list = None,
+        datetime_embeddings: list = [],
         datetime_embedding_dim: int = 20,
+        categorical_embedding_dim: int = 20,
         embedding_ood_ratio: float = 0.02, 
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
@@ -503,15 +58,16 @@ class PredictLite:
         self.load_from_file = load_from_file
         self.input_signals = input_signals
         self.input_length = input_length
+        self.categorical_inputs = categorical_inputs
         self.output_signals = output_signals
         self.output_length = output_length 
-        self.resample_data = resample_data
         self.data_sample_period = data_sample_period
         self.hidden_layer_n = hidden_layer_n
         self.hidden_layer_neurons = hidden_layer_neurons
         self.input_preprocessing = input_preprocessing
         self.datetime_embeddings = datetime_embeddings
         self.datetime_embedding_dim = datetime_embedding_dim
+        self.categorical_embedding_dim = categorical_embedding_dim
         self.embedding_ood_ratio = embedding_ood_ratio
         self.zerofill_nan = zerofill_nan
         self.interpolate_nan = interpolate_nan
@@ -548,6 +104,8 @@ class PredictLite:
             raise ValueError('No data sample period specified')
         if self.datetime_embedding_dim <= 0: 
             raise ValueError('Datetime embedding dim cannot be zero or negative')
+        if self.categorical_embedding_dim <= 0: 
+            raise ValueError('Categorical embedding dim cannot be zero or negative')
 
             
         # Check that all outputs are also in inputs. 
@@ -568,13 +126,10 @@ class PredictLite:
                 raise ValueError('Invalid preprocessing "{}" for signal "{}"'.format(preproc, col))
                 
         # Check that given datetime embeddings are available
-        if self.datetime_embeddings is not None: 
-            for emb in self.datetime_embeddings:
-                if emb not in DataPreAndPostProcessor.datetime_emb_options:
-                    raise ValueError('Invalid datetime embedding {}'.format(emb))
-        else: 
-            self.datetime_embeddings = []
-            
+        for emb in self.datetime_embeddings:
+            if emb not in DataPreAndPostProcessor.datetime_emb_options:
+                raise ValueError('Invalid datetime embedding {}'.format(emb))
+                        
         # Model parameter parsing and checking
         if self.hidden_layer_neurons is not None:
             if len(self.hidden_layer_neurons) != self.hidden_layer_n:
@@ -591,6 +146,7 @@ class PredictLite:
             output_length=self.output_length,
             output_signals=self.output_signals,
             datetime_embeddings=self.datetime_embeddings,
+            categorical_embeddings=self.categorical_inputs,
             embedding_map=self.embedding_map
         )
 
@@ -598,7 +154,6 @@ class PredictLite:
     def setup_data_preproc(self) -> None: 
         self.data_preproc = DataPreAndPostProcessor(
             input_signals=self.input_signals,
-            resample_data=self.resample_data, 
             data_sample_period=self.data_sample_period,
             interpolate_nan=self.interpolate_nan,
             zerofill_nan=self.zerofill_nan,
@@ -612,7 +167,7 @@ class PredictLite:
         self.model = PredictionModel(
             input_length=self.input_length, 
             input_signals=self.input_signals,
-            embeddings=self.datetime_embeddings,
+            embeddings=self.datetime_embeddings + self.categorical_inputs,
             embedding_map=self.embedding_map,
             hidden_layer_neurons=self.hidden_layer_neurons,
             hidden_layer_n=self.hidden_layer_n, 
@@ -646,9 +201,11 @@ class PredictLite:
         proc_data = self.data_preproc.preprocess(data)        
         
         # Parse embedding enumeration from data
-        self.embedding_map = parse_embedding_values(
+        self.embedding_map = parse_embedding_mapping(
             datetime_embeddings=self.datetime_embeddings, 
             datetime_embedding_dim=self.datetime_embedding_dim,
+            categorical_embeddings=self.categorical_inputs, 
+            categorical_embedding_dim=self.categorical_embedding_dim,
             data=proc_data,
         )
 
@@ -702,7 +259,7 @@ class PredictLite:
         
     def predict(self, data: pd.DataFrame, timestamp: pd.Timestamp = None) -> pd.DataFrame:
         """
-        Inference prediction. 
+        Inference mode prediction. 
         """
         # If prediction timestamp is not given, use the last timestamp in the data.
         if timestamp is None: 
@@ -716,7 +273,7 @@ class PredictLite:
         ts_start = data.index[i_start]
         
         # Preprocess the data
-        proc_data = self.data_preproc.preprocess(data.loc[ts_start : ts_end, self.input_signals])
+        proc_data = self.data_preproc.preprocess(data.loc[ts_start : ts_end])
         input_tensor = self.model_utils.create_input_tensor(proc_data, ts_end)
         
         # Make prediction and process it to original scale
