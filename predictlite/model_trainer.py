@@ -16,7 +16,7 @@ import torch.nn as nn
 # PredictLite modules 
 from predictlite.model import PredictionModel
 
-    
+
 class PredictionModelTrainer:
     
     def __init__(self, 
@@ -39,6 +39,7 @@ class PredictionModelTrainer:
         """
         train_losses = []
         test_losses = []
+        test_mape = []
         
         for epoch in range(self.epochs):
             # Training loop 
@@ -62,7 +63,7 @@ class PredictionModelTrainer:
                     output = self.model.forward(data)
                     loss = self.model.loss(output, target)
                     epoch_losses.append(loss.item())
-                    
+            
             test_losses.append(np.mean(epoch_losses))
             self.logging('epoch: {:3}, train loss: {:0.5f}, test loss: {:0.5f}'.format(
                     epoch,

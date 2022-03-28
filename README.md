@@ -18,6 +18,8 @@ Pandas DataFrame format is supported. The DataFrame must have timestamp index. I
 
 Only lagged inputs are supported, i.e. the model will not utilize known future variables. Model will use input data from the given timestamp and the input_length - 1 earlier values. 
 
+Even data sampling and no missing timestamps is assumed.
+
 Categorical inputs can be in any format, e.g. string, bool, int, etc. Categorical data is internally enumerated and mapped to embedding vectors. Out of distribution (OOD) embedding is trained and used during inference for categorical values that are not present in training data. For categorical data the model uses the values from the last timestamp in the input data. 
 
 Datetime embeddings are internally calculated from the data timestamps. Also the datetime embeddings include OOD embedding that is used for values not present in the training data. Such situation can occur e.g. when using year embeddings and making predictions for future years where there is no training data available. For datetime embeddigs the model uses the last timestamp in the input data. 
@@ -48,6 +50,12 @@ Optional parameters when setting up new model:
 - embedding_ood_ratio: ratio of training samples to be used to train out of distribution (OOD) embeddings. Default value = 0.02 meaning that 2% of training samples will use OOD categorical values. Does not apply to test data. 
 - interpolate_nan: enable/disable NaN value interpolation. Default value is True. Will perform linear interpolation using previous and next valid values. Will not be able to process NaN values at either end of the input DataFrame. 
 - zerofill_nan: enable/disable NaN value zero filling. Default value is True. If also interpolate_nan is True, the interpolation is performed first and the remaining NaN values are zerofilled. 
+
+
+Model fit mandatory parameters:
+- data: Pandas DataFrame data that is used to fit the model. 
+
+Model fit optional parameters: 
 - train_test_split: float between 0 and 1. Gives the ratio of data to be used in model training. Default is 0.8, which means that 80% of data rows are used in training and the last 20% are used in testing.
 - train_sample_n: integer value that specifies the number of trainig samples. Default is None and it causes all data rows to be used in model training.
 - test_sample_n: integer value that specifies the number of test samples. Default is None and it causes all data rows to be used in model testing.
@@ -56,7 +64,7 @@ Optional parameters when setting up new model:
 - epochs: neural network training epoch count. Default = 30.
 - random_seed: integer seed for random function. Set this when results must be possible to reproduce. Default = None. 
 - verbose: boolean value that enables/disables status and debug prints. Default = True.
-
+- fit_existing_model: boolean value that can be set True when retraining a existing model. Retraining will not update preprocessing parameters or embedding mapping. 
 
 ## Inference 
 

@@ -43,14 +43,6 @@ class PredictLite:
         embedding_ood_ratio: float = 0.02, 
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
-        train_sample_n: int = None,
-        test_sample_n: int = None,
-        train_test_split: float = 0.8, 
-        learning_rate: float = 1e-4, 
-        batch_size: int = 64,
-        epochs: int = 30,
-        random_seed: int = None, 
-        verbose: bool = True
     ): 
 
         self.__version__ = 0.3
@@ -71,15 +63,9 @@ class PredictLite:
         self.embedding_ood_ratio = embedding_ood_ratio
         self.zerofill_nan = zerofill_nan
         self.interpolate_nan = interpolate_nan
-        self.train_sample_n = train_sample_n
-        self.test_sample_n = test_sample_n
-        self.train_test_split = train_test_split
-        self.learning_rate = learning_rate
-        self.batch_size = batch_size
-        self.epochs = epochs
-        self.random_seed = random_seed
-        self.verbose = verbose
 
+        self.fit_done = False
+        
         if self.load_from_file is not None:
             self.load(self.load_from_file)
             
@@ -180,11 +166,34 @@ class PredictLite:
         self.model.print_summary()
         
 
-    def fit(self, data: pd.DataFrame) -> None:
+    def fit(self, 
+            data: pd.DataFrame,
+            fit_existing_model: bool = False,
+            train_sample_n: int = None,
+            test_sample_n: int = None,
+            train_test_split: float = 0.8, 
+            learning_rate: float = 1e-4, 
+            batch_size: int = 64,
+            epochs: int = 30,
+            random_seed: int = None, 
+            verbose: bool = True
+           ) -> None:
         """
         Fit the entire package, i.e. preprocessing, neural network, 
         postprocessing and other possible parameters. 
         """
+        self.train_sample_n = train_sample_n
+        self.test_sample_n = test_sample_n
+        self.train_test_split = train_test_split
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.random_seed = random_seed
+        self.verbose = verbose
+        
+        if (fit_existing_model == True) and (self.fit_done == False): 
+            raise ValueError('retrain_existing_model cannot be True when model has not been fit earlier.')
+
         
         # Reproducibility features
         if self.random_seed is not None: 
@@ -192,22 +201,24 @@ class PredictLite:
             torch.manual_seed(self.random_seed)
         
         # Setup preprocessing 
-        self.logging('Setting up preprocessing')
-        self.setup_data_preproc()
-        self.data_preproc.fit(data)
+        if not fit_existing_model:
+            self.logging('Setting up preprocessing')
+            self.setup_data_preproc()
+            self.data_preproc.fit(data)
         
         # Preprocess the data
         self.logging('Building dataset')
         proc_data = self.data_preproc.preprocess(data)        
         
-        # Parse embedding enumeration from data
-        self.embedding_map = parse_embedding_mapping(
-            datetime_embeddings=self.datetime_embeddings, 
-            datetime_embedding_dim=self.datetime_embedding_dim,
-            categorical_embeddings=self.categorical_inputs, 
-            categorical_embedding_dim=self.categorical_embedding_dim,
-            data=proc_data,
-        )
+        if not fit_existing_model:
+            # Parse embedding enumeration from data
+            self.embedding_map = parse_embedding_mapping(
+                datetime_embeddings=self.datetime_embeddings, 
+                datetime_embedding_dim=self.datetime_embedding_dim,
+                categorical_embeddings=self.categorical_inputs, 
+                categorical_embedding_dim=self.categorical_embedding_dim,
+                data=proc_data,
+            )
 
         # Setup utils instance
         self.setup_model_utils()
@@ -243,7 +254,8 @@ class PredictLite:
         )
         
         # Setup the model
-        self.setup_model()
+        if not fit_existing_model:
+            self.setup_model()
         
         # Fit the neural network
         self.model_trainer = PredictionModelTrainer(
@@ -252,9 +264,48 @@ class PredictLite:
             epochs=self.epochs, 
             logging=self.logging
         )
-        self.logging('Training the model')
+        if fit_existing_model:
+            self.logging('Training the existing model')
+        else:
+            self.logging('Training the model')
+
         self.train_losses, self.test_losses = self.model_trainer.fit(train_loader, test_loader)
         self.logging('Model training done')
+        self.fit_done = True
+
+        # Evaluate results
+        self.evaluate(test_inputs, test_targets)
+        
+    
+    def evaluate(self, test_inputs: list, test_targets: list) -> None: 
+
+        self.results = {}
+        for col in self.output_signals:
+            self.results[col] = {}
+            self.results[col]['abs_error'] = []
+
+        for i in range(len(test_inputs)):
+            prediction = self.model.predict(test_inputs[i])
+            prediction = self.model_utils.parse_prediction_from_tensor(prediction)
+            prediction = self.data_preproc.postprocess(prediction)
+            
+            target = self.model_utils.parse_prediction_from_tensor(test_targets[i])
+            target = self.data_preproc.postprocess(target)
+
+            for col in self.output_signals:
+                pred_values = prediction[col].values
+                target_values = target[col].values
+                abs_error = np.abs(pred_values - target_values)
+                self.results[col]['abs_error'].extend(list(abs_error))
+                
+        for col in self.output_signals:
+            self.results[col]['MAE'] = np.mean(self.results[col]['abs_error']).astype(float)
+            self.results[col].pop('abs_error')
+
+        self.logging('Test results:')
+        for col in self.output_signals: 
+            self.logging('{}:'.format(col))
+            self.logging('\tMAE: {:0.5f}'.format(self.results[col]['MAE']))
         
         
     def predict(self, data: pd.DataFrame, timestamp: pd.Timestamp = None) -> pd.DataFrame:
