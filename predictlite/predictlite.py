@@ -317,10 +317,10 @@ class PredictLite:
             timestamp = data.index[-1]       
             
         # Get a slice of the data to avoid processing large amount of unnecessary rows
-        i_end = data.index.get_loc(timestamp, method='pad')
+        i_end = data.index.get_indexer([timestamp], method='pad')[0]
         ts_end = data.index[i_end]
         est_ts_start = timestamp - timedelta(seconds=self.data_sample_period) * self.input_length
-        i_start = data.index.get_loc(est_ts_start, method='pad') - 1
+        i_start = data.index.get_indexer([est_ts_start], method='pad')[0] - 1
         ts_start = data.index[i_start]
         
         # Preprocess the data

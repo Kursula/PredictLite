@@ -61,7 +61,7 @@ class PredictionModelUtils:
         input_tensors = []
         
         # Float values
-        i_end = data.index.get_loc(timestamp, method='pad')
+        i_end = data.index.get_indexer([timestamp], method='pad')[0]
         i_start = i_end - self.input_length + 1
         ts_start = data.index[i_start]
         input_values = data.loc[ts_start : timestamp, self.input_signals].values.flatten(order='F')
@@ -98,7 +98,7 @@ class PredictionModelUtils:
         Covert dataframe data to a Torch tensor in model output configuration. 
         Timestamp gives the last row in input data. 
         """
-        i_start = data.index.get_loc(timestamp, method='pad') + 1
+        i_start = data.index.get_indexer([timestamp], method='pad')[0] + 1
         ts_start = data.index[i_start] 
         i_end = i_start + self.output_length - 1
         ts_end = data.index[i_end]
