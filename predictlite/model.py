@@ -19,58 +19,82 @@ class PredictionModel(nn.Module):
     def __init__(self, 
                  input_length, 
                  input_signals,
-                 embeddings,
                  embedding_map,
-                 hidden_layer_neurons,
-                 hidden_layer_n, 
+                 seq_layer_neurons,
+                 long_layer_neurons,
+                 flat_layer_neurons,
                  output_length,
                  output_signals
                 ):
         super().__init__()
                 
-        self.embeddings = embeddings
-        self.embedding_map = embedding_map
         self.input_length = input_length
         self.input_signals = input_signals
+        self.embedding_map = embedding_map
+        self.long_layer_neurons = long_layer_neurons
+        self.seq_layer_neurons = seq_layer_neurons
+        self.flat_layer_neurons = flat_layer_neurons
         self.output_length = output_length
         self.output_signals = output_signals
+
+        self.setup_nn()
+
+    
+    def setup_nn(self) -> None:
+        activation = nn.Mish()
+        input_size = 0
         
         # Define embedding inputs
-        self.embedding_layers = []
-        if embeddings is not None: 
+        self.embedding_layers = nn.ModuleList()
+        if self.embedding_map is not None: 
             self.use_embeddings = True
-            for col in embeddings:
+            for col in self.embedding_map.keys():
                 dim = self.embedding_map[col]['dim']
-                # OOD embedding has always the highest value. 
-                num = self.embedding_map[col]['ood'] + 1
-                self.embedding_layers.append(nn.Embedding(num, dim))
+                num = self.embedding_map[col]['ood'] + 1 # OOD embedding has always the highest value. 
+                emb_layer = nn.Embedding(num, dim)
+                emb_layer.predlite_name = col # give a name to the embedding module
+                self.embedding_layers.append(emb_layer)
+                input_size += dim
         else: 
             self.use_embeddings = False
-            
-        # Define size of first hidden layer input
-        input_size = input_length * len(input_signals)
-        if self.use_embeddings: 
-            for col in embeddings: 
-                input_size += self.embedding_map[col]['dim'] 
-        
-        prev_layer_neuron_n = input_size
 
-        # MLP layers
-        self.mlp_layers = []
-        for hid_size in hidden_layer_neurons:
-            if hid_size is None: 
-                this_layer_neuron_n = prev_layer_neuron_n
-            else:
-                this_layer_neuron_n = hid_size
-            self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, this_layer_neuron_n))
-            self.mlp_layers.append(nn.ReLU())
-            prev_layer_neuron_n = this_layer_neuron_n
+        # Calculate total input width
+        input_size += len(self.input_signals)
+        
+        # Sequential MLP layers 
+        self.seq_layers = nn.ModuleList()
+        prev_layer_neuron_n = input_size
+        for neuron_n in self.seq_layer_neurons:
+            self.seq_layers.append(nn.Linear(prev_layer_neuron_n, neuron_n))
+            self.seq_layers.append(activation)
+            prev_layer_neuron_n = neuron_n
+
+        self.seq_layers.append(nn.Flatten(start_dim=-2))
+        seq_output_n = prev_layer_neuron_n * self.input_length
+
+        # Longitudinal MLP layers 
+        self.long_layers = nn.ModuleList()
+        prev_layer_neuron_n = self.input_length
+        for neuron_n in self.long_layer_neurons:
+            self.long_layers.append(nn.Linear(prev_layer_neuron_n, neuron_n))
+            self.long_layers.append(activation)
+            prev_layer_neuron_n = neuron_n
+
+        self.long_layers.append(nn.Flatten(start_dim=-2))
+        long_output_n = prev_layer_neuron_n * input_size
+        
+        # Flattened MLP layers
+        prev_layer_neuron_n = seq_output_n + long_output_n
+        self.flat_layers = nn.ModuleList()
+        for neuron_n in self.flat_layer_neurons:
+            self.flat_layers.append(nn.Linear(prev_layer_neuron_n, neuron_n))
+            self.flat_layers.append(activation)
+            prev_layer_neuron_n = neuron_n
 
         # Output
-        output_size = output_length * len(output_signals)
-        self.mlp_layers.append(nn.Linear(prev_layer_neuron_n, output_size))
-        self.model = nn.Sequential(*self.mlp_layers)
-            
+        output_size = self.output_length * len(self.output_signals)
+        self.flat_layers.append(nn.Linear(prev_layer_neuron_n, output_size))
+                    
             
     def forward(self, x: torch.tensor) -> torch.tensor:
         """
@@ -83,10 +107,28 @@ class PredictionModel(nn.Module):
                 emb_vec = self.embedding_layers[i](emb_input)
                 emb_vec = torch.squeeze(emb_vec)
                 inputs.append(emb_vec)
-            inputs = torch.cat(inputs, dim=-1)
-            
-        y_pred = self.model(inputs)    
-        return y_pred
+        x_in = torch.cat(inputs, dim=-1)
+
+        # Sequential layers
+        x = x_in
+        for layer in self.seq_layers: 
+            x = layer(x)
+        seq_out = x        
+
+        # Longitudinal layers
+        x = torch.rot90(x_in, 1, [-2, -1])
+        for layer in self.long_layers: 
+            x = layer(x)
+        long_out = x
+        
+        # Flattened layers
+        x = torch.cat([seq_out, long_out], dim=-1)
+        for layer in self.flat_layers: 
+            x = layer(x)
+
+        return x
+        #y_pred = self.model(inputs)    
+        #return y_pred
     
     
     def loss(self, y_pred, y_true): 
@@ -101,17 +143,9 @@ class PredictionModel(nn.Module):
         """
         Inference processing. 
         """
-        inputs = [x[0]]
-        if self.use_embeddings:
-            for i, emb_input in enumerate(x[1:]):
-                emb_vec = self.embedding_layers[i](emb_input)
-                emb_vec = torch.squeeze(emb_vec)
-                inputs.append(emb_vec)
-            inputs = torch.cat(inputs, dim=-1)
-
-        self.model.eval()
+        self.eval()
         with torch.no_grad():
-            y_pred = self.model(inputs.unsqueeze(0)).detach()[0]
+            y_pred = self.forward(x).detach()
         return y_pred
 
 
@@ -126,18 +160,41 @@ class PredictionModel(nn.Module):
 
         
     def print_summary(self) -> None: 
+        tot_mlp_params = 0 
+        
         print('Inputs:')
-        for input_signal in self.input_signals: 
-            print('\t{}: {}'.format(input_signal, self.input_length))
-        if self.use_embeddings: 
-            for i, emb in enumerate(self.embeddings):
-                print('\t{}: {}'.format(emb, self.embedding_layers[i]))
+        print('\tFloat inputs: {}'.format(self.input_signals))
+        print('\tTime steps: {}'.format(self.input_length))
+        
+        for layer in self.embedding_layers:
+            print('\t{}: num_embeddings: {}, embedding_dim: {}'.format(layer.predlite_name, layer.num_embeddings, layer.embedding_dim))
+        
+        print('MLP sequential part:')
+        for layer in self.seq_layers: 
+            if type(layer) == torch.nn.modules.linear.Linear: 
+                pc = (layer.in_features + 1) * layer.out_features
+                tot_mlp_params += pc
+                print('\t{}, parameter count: {}'.format(layer, pc))
+            else: 
+                print('\t{}'.format(layer))
+        
+        print('MLP longitudinal part:')
+        for layer in self.long_layers: 
+            if type(layer) == torch.nn.modules.linear.Linear: 
+                pc = (layer.in_features + 1) * layer.out_features
+                tot_mlp_params += pc
+                print('\t{}, parameter count: {}'.format(layer, pc))
+            else: 
+                print('\t{}'.format(layer))
+        
+        print('MLP flattened part:')
+        for layer in self.flat_layers: 
+            if type(layer) == torch.nn.modules.linear.Linear: 
+                pc = (layer.in_features + 1) * layer.out_features
+                tot_mlp_params += pc
+                print('\t{}, parameter count: {}'.format(layer, pc))
+            else: 
+                print('\t{}'.format(layer))        
                 
-        print('MLP:')
-        for layer in self.mlp_layers: 
-            print('\t{}'.format(layer))
-            
-        print('Outputs:')
-        for output_signal in self.output_signals: 
-            print('\t{}: {}'.format(output_signal, self.output_length))
-
+        print('\nTotal MLP parameter count: {}'.format(tot_mlp_params))
+        

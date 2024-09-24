@@ -12,7 +12,7 @@ import pandas as pd
 class DataPreAndPostProcessor:
 
     proc_options = ['minmax', 'z-norm', 'none']
-    datetime_emb_options = ['year', 'month', 'day_of_week', 'hour', 'minute']
+    datetime_emb_options = ['year', 'month', 'day', 'day_of_week', 'hour', 'minute', 'second']
     
     def __init__(self,
                  input_signals: list,
@@ -82,15 +82,19 @@ class DataPreAndPostProcessor:
         # Datetime embeddings
         for emb in self.datetime_embeddings: 
             if emb == 'year':
-                proc_data[emb] = proc_data.index.year
-            if emb == 'month':
-                proc_data[emb] = proc_data.index.month
-            if emb == 'day_of_week':
-                proc_data[emb] = proc_data.index.dayofweek
-            if emb == 'hour':
-                proc_data[emb] = proc_data.index.hour
-            if emb == 'minute':
-                proc_data[emb] = proc_data.index.minute
+                proc_data['year_emb'] = proc_data.index.year
+            elif emb == 'month':
+                proc_data['month_emb'] = proc_data.index.month
+            elif emb == 'day':
+                proc_data['day_emb'] = proc_data.index.day
+            elif emb == 'day_of_week':
+                proc_data['day_of_week_emb'] = proc_data.index.dayofweek
+            elif emb == 'hour':
+                proc_data['hour_emb'] = proc_data.index.hour
+            elif emb == 'minute':
+                proc_data['minute_emb'] = proc_data.index.minute
+            elif emb == 'second':
+                proc_data['second_emb'] = proc_data.index.second
             
         return proc_data
     

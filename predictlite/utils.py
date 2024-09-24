@@ -36,16 +36,12 @@ class PredictionModelUtils:
                  input_signals: list,
                  output_length: int, 
                  output_signals: list,
-                 datetime_embeddings: list, 
-                 categorical_embeddings: list, 
                  embedding_map: dict,
                 ):
         self.input_length = input_length
         self.input_signals = input_signals
         self.output_length = output_length 
         self.output_signals = output_signals
-        self.datetime_embeddings = datetime_embeddings
-        self.categorical_embeddings = categorical_embeddings
         self.embedding_map = embedding_map
 
     
@@ -59,36 +55,28 @@ class PredictionModelUtils:
         Timestamp gives the last row in input data. 
         """
         input_tensors = []
-        
-        # Float values
+
+        # Start and end index values
         i_end = data.index.get_indexer([timestamp], method='pad')[0]
         i_start = i_end - self.input_length + 1
         ts_start = data.index[i_start]
-        input_values = data.loc[ts_start : timestamp, self.input_signals].values.flatten(order='F')
+        ts_end = timestamp
+        
+        # Float values
+        input_values = data.loc[ts_start : ts_end, self.input_signals].values #.flatten(order='F')
         input_tensors.append(torch.from_numpy(input_values).float())
         
-        # Datetime embeddings 
-        for col in self.datetime_embeddings:
-            key = str(int(data.loc[timestamp, col]))
-            if (key in self.embedding_map[col]['map'].keys()) and (force_ood == False): 
-                value = self.embedding_map[col]['map'][key]
-            else: 
-                # Use out-of-distribution embedding. 
-                value = self.embedding_map[col]['ood']
-            value = torch.LongTensor([value])
-            input_tensors.append(value)
-            
-        # Categorical embeddings 
-        for col in self.categorical_embeddings:
-            key = str(data.loc[timestamp, col])
-            if (key in self.embedding_map[col]['map'].keys()) and (force_ood == False): 
-                value = self.embedding_map[col]['map'][key]
-            else: 
-                # Use out-of-distribution embedding. 
-                value = self.embedding_map[col]['ood']
-            
-            value = torch.LongTensor([value])
-            input_tensors.append(value)
+        # Embeddings 
+        if self.embedding_map is not None:
+            for col in self.embedding_map.keys():
+                emb_keys = []
+                for value in data.loc[ts_start : ts_end, col].astype(str).values.tolist(): 
+                    if (value in self.embedding_map[col]['map'].keys()) and (force_ood == False):
+                        emb_key = self.embedding_map[col]['map'][value]
+                    else: 
+                        emb_key = self.embedding_map[col]['ood']
+                    emb_keys.append(emb_key)
+                input_tensors.append(torch.LongTensor(emb_keys))
             
         return input_tensors
     
@@ -170,12 +158,16 @@ def parse_embedding_mapping(datetime_embeddings: list,
     Create map of categorical values to embedding index values. 
     Out of distribution (ood) index is set for values that do not exist in training data. 
     """
+    if (len(datetime_embeddings) == 0) and (len(categorical_embeddings) == 0): 
+        return None
+    
     emb_map = {}
     for col in datetime_embeddings: 
-        emb_map[col] = {'map' : {}, 'ood' : None, 'dim' : datetime_embedding_dim}
-        for i, value in enumerate(data[col].unique()):
-            emb_map[col]['map'][str(value)] = i 
-        emb_map[col]['ood'] = i + 1
+        emb_col_name = '{}_emb'.format(col)
+        emb_map[emb_col_name] = {'map' : {}, 'ood' : None, 'dim' : datetime_embedding_dim}
+        for i, value in enumerate(data[emb_col_name].unique()):
+            emb_map[emb_col_name]['map'][str(value)] = i 
+        emb_map[emb_col_name]['ood'] = i + 1
         
     for col in categorical_embeddings: 
         emb_map[col] = {'map' : {}, 'ood' : None, 'dim' : categorical_embedding_dim}

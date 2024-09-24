@@ -34,12 +34,13 @@ class PredictLite:
         output_signals: list = None,
         output_length: int = None,
         data_sample_period: float = None,
-        hidden_layer_n: int = 0,
-        hidden_layer_neurons: list = None,
+        sequential_layer_neurons: list = None,
+        longitudinal_layer_neurons: list = None,
+        flattened_layer_neurons: list = None,
         input_preprocessing: dict = None,
         datetime_embeddings: list = [],
-        datetime_embedding_dim: int = 20,
-        categorical_embedding_dim: int = 20,
+        datetime_embedding_dim: int = 2,
+        categorical_embedding_dim: int = 2,
         embedding_ood_ratio: float = 0.02, 
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
@@ -54,8 +55,9 @@ class PredictLite:
         self.output_signals = output_signals
         self.output_length = output_length 
         self.data_sample_period = data_sample_period
-        self.hidden_layer_n = hidden_layer_n
-        self.hidden_layer_neurons = hidden_layer_neurons
+        self.seq_layer_neurons = sequential_layer_neurons
+        self.long_layer_neurons = longitudinal_layer_neurons
+        self.flat_layer_neurons = flattened_layer_neurons
         self.input_preprocessing = input_preprocessing
         self.datetime_embeddings = datetime_embeddings
         self.datetime_embedding_dim = datetime_embedding_dim
@@ -115,14 +117,20 @@ class PredictLite:
         for emb in self.datetime_embeddings:
             if emb not in DataPreAndPostProcessor.datetime_emb_options:
                 raise ValueError('Invalid datetime embedding {}'.format(emb))
-                        
+
+        # Check embedding dimensions 
+        if self.datetime_embedding_dim < 2:
+            raise ValueError('datetime_embedding_dim must be minimum 2')    
+        if self.categorical_embedding_dim < 2:
+            raise ValueError('categorical_embedding_dim must be minimum 2')         
+        
         # Model parameter parsing and checking
-        if self.hidden_layer_neurons is not None:
-            if len(self.hidden_layer_neurons) != self.hidden_layer_n:
-                raise ValueError('Mismatch between hidden_layer_neurons and hidden_layer_n.')
-        else: 
-            # Fill the list with None values that makes the model use input layer size for hidden layer sizes. 
-            self.hidden_layer_neurons = [None for _ in range(self.hidden_layer_n)]
+        if self.seq_layer_neurons is None:
+            raise ValueError('sequential_layer_neurons must be defined.')
+        if self.long_layer_neurons is None:
+            raise ValueError('longitudinal_layer_neurons must be defined.')
+        if self.flat_layer_neurons is None:
+            raise ValueError('flattened_layer_neurons must be defined.')
 
             
     def setup_model_utils(self) -> None: 
@@ -131,8 +139,6 @@ class PredictLite:
             input_signals=self.input_signals,
             output_length=self.output_length,
             output_signals=self.output_signals,
-            datetime_embeddings=self.datetime_embeddings,
-            categorical_embeddings=self.categorical_inputs,
             embedding_map=self.embedding_map
         )
 
@@ -153,10 +159,10 @@ class PredictLite:
         self.model = PredictionModel(
             input_length=self.input_length, 
             input_signals=self.input_signals,
-            embeddings=self.datetime_embeddings + self.categorical_inputs,
             embedding_map=self.embedding_map,
-            hidden_layer_neurons=self.hidden_layer_neurons,
-            hidden_layer_n=self.hidden_layer_n, 
+            seq_layer_neurons=self.seq_layer_neurons,
+            long_layer_neurons=self.long_layer_neurons,
+            flat_layer_neurons=self.flat_layer_neurons,
             output_length=self.output_length,
             output_signals=self.output_signals
         )
@@ -192,7 +198,7 @@ class PredictLite:
         self.verbose = verbose
         
         if (fit_existing_model == True) and (self.fit_done == False): 
-            raise ValueError('retrain_existing_model cannot be True when model has not been fit earlier.')
+            raise ValueError('fit_existing_model cannot be True when model has not been fit earlier.')
 
         
         # Reproducibility features
@@ -231,7 +237,9 @@ class PredictLite:
             embedding_ood_ratio=self.embedding_ood_ratio,
         )
         train_dataset = PredictionDataset(train_inputs, train_targets)
-    
+
+        self.temp = train_dataset
+        
         # Convert training samples to dataloader format
         train_loader = self.model_utils.create_data_loader(
             train_dataset, 
