@@ -2,7 +2,7 @@
 # This is PredictLite, a lightweight time series prediction model using        
 # PyTorch and basic Numpy and Pandas processing functions.
 #
-# Copyright Mikko Kursula 2022. MIT license. 
+# Copyright Mikko Kursula 2022 - 2024. MIT license. 
 ################################################################################
 
 # General
@@ -44,9 +44,9 @@ class PredictLite:
         embedding_ood_ratio: float = 0.02, 
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
+        percentiles: list = [0.25, 0.75],
+        smoothing_weight: float = 0.5,
     ): 
-
-        self.__version__ = 0.3
 
         self.load_from_file = load_from_file
         self.input_signals = input_signals
@@ -65,6 +65,8 @@ class PredictLite:
         self.embedding_ood_ratio = embedding_ood_ratio
         self.zerofill_nan = zerofill_nan
         self.interpolate_nan = interpolate_nan
+        self.percentiles = percentiles
+        self.smoothing_weight = smoothing_weight
 
         self.fit_done = False
         
@@ -94,7 +96,12 @@ class PredictLite:
             raise ValueError('Datetime embedding dim cannot be zero or negative')
         if self.categorical_embedding_dim <= 0: 
             raise ValueError('Categorical embedding dim cannot be zero or negative')
-
+        if self.seq_layer_neurons is None:
+            raise ValueError('sequential_layer_neurons must be defined.')
+        if self.long_layer_neurons is None:
+            raise ValueError('longitudinal_layer_neurons must be defined.')
+        if self.flat_layer_neurons is None:
+            raise ValueError('flattened_layer_neurons must be defined.')
             
         # Check that all outputs are also in inputs. 
         for col in self.output_signals:
@@ -123,14 +130,6 @@ class PredictLite:
             raise ValueError('datetime_embedding_dim must be minimum 2')    
         if self.categorical_embedding_dim < 2:
             raise ValueError('categorical_embedding_dim must be minimum 2')         
-        
-        # Model parameter parsing and checking
-        if self.seq_layer_neurons is None:
-            raise ValueError('sequential_layer_neurons must be defined.')
-        if self.long_layer_neurons is None:
-            raise ValueError('longitudinal_layer_neurons must be defined.')
-        if self.flat_layer_neurons is None:
-            raise ValueError('flattened_layer_neurons must be defined.')
 
             
     def setup_model_utils(self) -> None: 
@@ -164,7 +163,9 @@ class PredictLite:
             long_layer_neurons=self.long_layer_neurons,
             flat_layer_neurons=self.flat_layer_neurons,
             output_length=self.output_length,
-            output_signals=self.output_signals
+            output_signals=self.output_signals,
+            percentiles=self.percentiles,
+            smoothing_weight=self.smoothing_weight
         )
 
 
@@ -174,7 +175,6 @@ class PredictLite:
 
     def fit(self, 
             data: pd.DataFrame,
-            fit_existing_model: bool = False,
             train_sample_n: int = None,
             test_sample_n: int = None,
             train_test_split: float = 0.8, 
@@ -197,26 +197,21 @@ class PredictLite:
         self.random_seed = random_seed
         self.verbose = verbose
         
-        if (fit_existing_model == True) and (self.fit_done == False): 
-            raise ValueError('fit_existing_model cannot be True when model has not been fit earlier.')
-
-        
         # Reproducibility features
         if self.random_seed is not None: 
             np.random.seed(self.random_seed)
             torch.manual_seed(self.random_seed)
-        
-        # Setup preprocessing 
-        if not fit_existing_model:
+
+        if self.fit_done == False: 
             self.logging('Setting up preprocessing')
             self.setup_data_preproc()
             self.data_preproc.fit(data)
-        
+
         # Preprocess the data
         self.logging('Building dataset')
         proc_data = self.data_preproc.preprocess(data)        
-        
-        if not fit_existing_model:
+    
+        if self.fit_done == False: 
             # Parse embedding enumeration from data
             self.embedding_map = parse_embedding_mapping(
                 datetime_embeddings=self.datetime_embeddings, 
@@ -237,8 +232,6 @@ class PredictLite:
             embedding_ood_ratio=self.embedding_ood_ratio,
         )
         train_dataset = PredictionDataset(train_inputs, train_targets)
-
-        self.temp = train_dataset
         
         # Convert training samples to dataloader format
         train_loader = self.model_utils.create_data_loader(
@@ -262,7 +255,7 @@ class PredictLite:
         )
         
         # Setup the model
-        if not fit_existing_model:
+        if self.fit_done == False: 
             self.setup_model()
         
         # Fit the neural network
@@ -272,11 +265,7 @@ class PredictLite:
             epochs=self.epochs, 
             logging=self.logging
         )
-        if fit_existing_model:
-            self.logging('Training the existing model')
-        else:
-            self.logging('Training the model')
-
+        self.logging('Training the model')
         self.train_losses, self.test_losses = self.model_trainer.fit(train_loader, test_loader)
         self.logging('Model training done')
         self.fit_done = True
@@ -296,14 +285,16 @@ class PredictLite:
             prediction = self.model.predict(test_inputs[i])
             prediction = self.model_utils.parse_prediction_from_tensor(prediction)
             prediction = self.data_preproc.postprocess(prediction)
+            prediction = prediction['prediction']
             
-            target = self.model_utils.parse_prediction_from_tensor(test_targets[i])
-            target = self.data_preproc.postprocess(target)
+            ground_truth = self.model_utils.parse_prediction_from_tensor(test_targets[i])
+            ground_truth = self.data_preproc.postprocess(ground_truth)
+            ground_truth = ground_truth['ground_truth']
 
             for col in self.output_signals:
                 pred_values = prediction[col].values
-                target_values = target[col].values
-                abs_error = np.abs(pred_values - target_values)
+                gt_values = ground_truth[col].values
+                abs_error = np.abs(pred_values - gt_values)
                 self.results[col]['abs_error'].extend(list(abs_error))
                 
         for col in self.output_signals:
@@ -336,15 +327,18 @@ class PredictLite:
         input_tensor = self.model_utils.create_input_tensor(proc_data, ts_end)
         
         # Make prediction and process it to original scale
-        prediction = self.model.predict(input_tensor)
-        prediction = self.model_utils.parse_prediction_from_tensor(prediction)
-        prediction = self.data_preproc.postprocess(prediction)
-        
-        # Add timestamps to prediction
-        period = timedelta(seconds=self.data_sample_period)
-        ts_index = pd.Series([ts_end + (1 + i) * period for i in range(self.output_length)])       
-        prediction = prediction.set_index(ts_index)
-        return prediction
+        predictions = self.model.predict(input_tensor)
+        predictions = self.model_utils.parse_prediction_from_tensor(predictions)
+        predictions = self.data_preproc.postprocess(predictions)
+
+        results = {}
+        for key, values in predictions.items():
+            # Add timestamps to prediction
+            period = timedelta(seconds=self.data_sample_period)
+            ts_index = pd.Series([ts_end + (1 + i) * period for i in range(self.output_length)])       
+            values = values.set_index(ts_index)
+            results[key] = values
+        return results
 
     
     def get_params(self) -> dict:

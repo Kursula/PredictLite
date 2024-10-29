@@ -2,7 +2,7 @@
 # This is PredictLite, a lightweight time series prediction model using        
 # PyTorch and basic Numpy and Pandas processing functions.
 #
-# Copyright Mikko Kursula 2022. MIT license. 
+# Copyright Mikko Kursula 2022 - 2024. MIT license. 
 ################################################################################
 
 # General
@@ -99,24 +99,29 @@ class DataPreAndPostProcessor:
         return proc_data
     
     
-    def postprocess(self, data: pd.DataFrame) -> pd.DataFrame: 
+    def postprocess(self, data: dict) -> dict: 
         """
         Post-process the prediction results, i.e. scale the values back to original scale. 
         Outputs share the same preprocessing with inputs. 
         """
-        proc_data = data.copy()
-        
-        for col in self.output_signals:
-            if self.input_preprocessing[col] == 'minmax':
-                min_val = self.preproc_stats['signal_min_values'][col]
-                max_val = self.preproc_stats['signal_max_values'][col]
-                proc_data[col] = proc_data[col] * (max_val - min_val) + min_val
-            elif self.input_preprocessing[col] == 'z-norm':
-                mean_val = self.preproc_stats['signal_mean_values'][col]
-                std_val = self.preproc_stats['signal_std_values'][col]
-                proc_data[col] = proc_data[col] * std_val + mean_val
-
-        return proc_data
+        results = {}
+        for key, values in data.items(): 
+            proc_data = values.copy()
+            
+            for col in self.output_signals:
+                if self.input_preprocessing[col] == 'minmax':
+                    min_val = self.preproc_stats['signal_min_values'][col]
+                    max_val = self.preproc_stats['signal_max_values'][col]
+                    proc_data[col] = proc_data[col] * (max_val - min_val) + min_val
+                
+                elif self.input_preprocessing[col] == 'z-norm':
+                    mean_val = self.preproc_stats['signal_mean_values'][col]
+                    std_val = self.preproc_stats['signal_std_values'][col]
+                    proc_data[col] = proc_data[col] * std_val + mean_val
+            
+            results[key] = proc_data
+    
+        return results
 
     
     def get_params(self) -> dict: 

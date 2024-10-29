@@ -2,7 +2,7 @@
 # This is PredictLite, a lightweight time series prediction model using        
 # PyTorch and basic Numpy and Pandas processing functions.
 #
-# Copyright Mikko Kursula 2022. MIT license. 
+# Copyright Mikko Kursula 2022 - 2024. MIT license. 
 ################################################################################
 
 # General

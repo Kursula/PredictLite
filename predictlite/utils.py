@@ -2,7 +2,7 @@
 # This is PredictLite, a lightweight time series prediction model using        
 # PyTorch and basic Numpy and Pandas processing functions.
 #
-# Copyright Mikko Kursula 2022. MIT license. 
+# Copyright Mikko Kursula 2022 - 2024. MIT license. 
 ################################################################################
 
 # General
@@ -96,9 +96,19 @@ class PredictionModelUtils:
     
     
     def parse_prediction_from_tensor(self, output_tensor: torch.tensor) -> pd.DataFrame:
-        values = output_tensor.numpy().reshape((self.output_length, len(self.output_signals)), order='F')
-        pred = pd.DataFrame(data=values, columns=self.output_signals)
-        return pred
+        results = {}
+        if len(output_tensor.shape) == 3: 
+            keys = ['prediction', 'lower_percentile', 'upper_percentile']
+            for i in range(3):
+                values = output_tensor[:, i, :].numpy().reshape((self.output_length, len(self.output_signals)), order='F')
+                pred = pd.DataFrame(data=values, columns=self.output_signals)
+                results[keys[i]] = pred
+        else:
+            # Used only to convert ground truth back to original data format. 
+            values = output_tensor.numpy().reshape((self.output_length, len(self.output_signals)), order='F')
+            pred = pd.DataFrame(data=values, columns=self.output_signals)
+            results['ground_truth'] = pred
+        return results
 
     
     def create_samples(self, data: pd.DataFrame, sample_count: int, embedding_ood_ratio: float = 0) -> list:
