@@ -158,32 +158,5 @@ class PredictionModelUtils:
         return data_loader
     
     
-def parse_embedding_mapping(datetime_embeddings: list, 
-                            datetime_embedding_dim: int, 
-                            categorical_embeddings: list, 
-                            categorical_embedding_dim: int,
-                            data: pd.DataFrame,
-                           ) -> dict:
-    """
-    Create map of categorical values to embedding index values. 
-    Out of distribution (ood) index is set for values that do not exist in training data. 
-    """
-    if (len(datetime_embeddings) == 0) and (len(categorical_embeddings) == 0): 
-        return None
-    
-    emb_map = {}
-    for col in datetime_embeddings: 
-        emb_col_name = '{}_emb'.format(col)
-        emb_map[emb_col_name] = {'map' : {}, 'ood' : None, 'dim' : datetime_embedding_dim}
-        for i, value in enumerate(data[emb_col_name].unique()):
-            emb_map[emb_col_name]['map'][str(value)] = i 
-        emb_map[emb_col_name]['ood'] = i + 1
-        
-    for col in categorical_embeddings: 
-        emb_map[col] = {'map' : {}, 'ood' : None, 'dim' : categorical_embedding_dim}
-        for i, value in enumerate(data[col].unique()):
-            emb_map[col]['map'][str(value)] = i 
-        emb_map[col]['ood'] = i + 1
-        
-    return emb_map
+
 

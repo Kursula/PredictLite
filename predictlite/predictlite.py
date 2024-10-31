@@ -19,7 +19,7 @@ import torch.nn as nn
 # PredictLite modules 
 from predictlite.model import PredictionModel
 from predictlite.model_trainer import PredictionModelTrainer
-from predictlite.utils import PredictionDataset, PredictionModelUtils, parse_embedding_mapping
+from predictlite.utils import PredictionDataset, PredictionModelUtils
 from predictlite.data_processor import DataPreAndPostProcessor
 
 
@@ -174,7 +174,7 @@ class PredictLite:
         
 
     def fit(self, 
-            data: pd.DataFrame,
+            data: list[pd.DataFrame],
             train_sample_n: int = None,
             test_sample_n: int = None,
             train_test_split: float = 0.8, 
@@ -209,45 +209,66 @@ class PredictLite:
 
         # Preprocess the data
         self.logging('Building dataset')
-        proc_data = self.data_preproc.preprocess(data)        
-    
+        proc_data = self.data_preproc.preprocess(data)
+        
         if self.fit_done == False: 
             # Parse embedding enumeration from data
-            self.embedding_map = parse_embedding_mapping(
+            self.embedding_map = self.data_preproc.parse_embedding_mapping(
                 datetime_embeddings=self.datetime_embeddings, 
                 datetime_embedding_dim=self.datetime_embedding_dim,
                 categorical_embeddings=self.categorical_inputs, 
                 categorical_embedding_dim=self.categorical_embedding_dim,
                 data=proc_data,
-            )
+            )        
 
         # Setup utils instance
         self.setup_model_utils()
         
-        # Create training dataset
-        split_i = int(len(proc_data) * self.train_test_split)
-        train_inputs, train_targets = self.model_utils.create_samples(
-            data=proc_data.iloc[0 : split_i], 
-            sample_count=self.train_sample_n,
-            embedding_ood_ratio=self.embedding_ood_ratio,
-        )
-        train_dataset = PredictionDataset(train_inputs, train_targets)
+        # Calculate number of rows in each dataframe
+        df_lens = []
+        for df in data: 
+            df_lens.append(len(df))
+        tot_len = sum(df_lens)
+        
+        # Create training dataset. Each dataframe is processed separately into train and test samples.
+        train_inputs = []
+        train_targets = []
+        for i, df in enumerate(proc_data): 
+            train_n = int(self.train_sample_n * df_lens[i] / tot_len)
+            split_i = int(df_lens[i] * self.train_test_split)
+            
+            inputs, targets = self.model_utils.create_samples(
+                data=df.iloc[0 : split_i], 
+                sample_count=train_n,
+                embedding_ood_ratio=self.embedding_ood_ratio,
+            )
+            train_inputs += inputs
+            train_targets += targets
         
         # Convert training samples to dataloader format
+        train_dataset = PredictionDataset(train_inputs, train_targets)
         train_loader = self.model_utils.create_data_loader(
             train_dataset, 
             batch_size=self.batch_size, 
             shuffle=True
         )
 
-        # Create testing dataset
-        test_inputs, test_targets = self.model_utils.create_samples(
-            data=proc_data.iloc[split_i :], 
-            sample_count=self.test_sample_n,
-        )
-        test_dataset = PredictionDataset(test_inputs, test_targets)
+        # Create testing dataset. Each dataframe is processed separately into train and test samples.
+        test_inputs = []
+        test_targets = []
+        for i, df in enumerate(proc_data): 
+            test_n = int(self.test_sample_n * df_lens[i] / tot_len)
+            split_i = int(df_lens[i] * self.train_test_split)
+            
+            inputs, targets = self.model_utils.create_samples(
+                data=df.iloc[split_i :], 
+                sample_count=test_n,
+            )
+            test_inputs += inputs
+            test_targets += targets
 
         # Convert testing samples to dataloader format
+        test_dataset = PredictionDataset(test_inputs, test_targets)
         test_loader = self.model_utils.create_data_loader(
             test_dataset, 
             batch_size=self.batch_size, 
@@ -323,7 +344,7 @@ class PredictLite:
         ts_start = data.index[i_start]
         
         # Preprocess the data
-        proc_data = self.data_preproc.preprocess(data.loc[ts_start : ts_end])
+        proc_data = self.data_preproc.preprocess(data.loc[ts_start : ts_end])[0]
         input_tensor = self.model_utils.create_input_tensor(proc_data, ts_end)
         
         # Make prediction and process it to original scale

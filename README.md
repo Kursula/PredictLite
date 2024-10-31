@@ -30,4 +30,4 @@ Categorical inputs can be in any format, e.g. string, bool, int, etc. Categorica
 
 Datetime embeddings are internally calculated from the data timestamps. Also the datetime embeddings include OOD embedding that is used for values not present in the training data. Such situation can occur e.g. when using year embeddings and making predictions for future years where there is no training data available. 
 
-Currently only one dataset is supported and it is assumed that it contains a continuous data sequence. 
+Multiple datasets are supported. The datasets (dataframes) can be e.g. time series data from different sources or segments of a time series. Train and test samples are processed from each dataset. 
