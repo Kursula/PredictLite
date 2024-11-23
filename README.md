@@ -9,6 +9,8 @@ The prediction model is a Multilayer Perceptron (MLP) neural network that borrow
 * Longitudinal part that processes the input time series one feature at a time.
 * Flattened part that takes the flattened outputs from sequential and longitudinal parts and makes the final predictions.
 
+The model trainer supports curriculum training that is usable in multi-step prediction. In curriculum training the training process starts with small number of prediction steps and gradually increases the number of prediction time steps. The curriculum training feature is implemented using loss function masking. 
+
 The prediction can be a multivariate and multi-step. Configurable percentiles will be generated to e.g. estimate prediction confidence interval. 
 
 The model has smoothing feature for minimizing noise in multi-step prediction. The amount of smoothing can be configured using the smoothing parameter. 
