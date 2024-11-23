@@ -23,12 +23,14 @@ class PredictionModelTrainer:
                  model: PredictionModel, 
                  learning_rate: float, 
                  epochs: int, 
+                 curriculum_training: bool, 
                  logging: Callable
                 ): 
         
         self.model = model
         self.learning_rate = learning_rate
         self.epochs = epochs
+        self.curriculum_training = curriculum_training
         self.logging = logging
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
@@ -42,13 +44,19 @@ class PredictionModelTrainer:
         test_mape = []
         
         for epoch in range(self.epochs):
+            if self.curriculum_training:
+                progress = 2 * epoch / self.epochs
+                progress = min (1, progress)
+            else:
+                progress = 1 
+                
             # Training loop 
             self.model.train()
             epoch_losses = []
             for data, target in train_loader:
                 self.optimizer.zero_grad()
                 output = self.model.forward(data)
-                loss = self.model.loss(output, target)     
+                loss = self.model.loss(output, target, progress)     
                 loss.backward()
                 self.optimizer.step()
                 epoch_losses.append(loss.item())
@@ -61,7 +69,7 @@ class PredictionModelTrainer:
             with torch.no_grad():
                 for data, target in test_loader:
                     output = self.model.forward(data)
-                    loss = self.model.loss(output, target)
+                    loss = self.model.loss(output, target, progress)
                     epoch_losses.append(loss.item())
             
             test_losses.append(np.mean(epoch_losses))

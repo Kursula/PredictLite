@@ -122,9 +122,8 @@ class DataPreAndPostProcessor:
         Post-processing is done for one prediction at a time. 
         """
         results = {}
-        for key, values in data.items(): 
+        for key, values in data.items():
             proc_data = values.copy()
-            
             for col in self.output_signals:
                 if self.input_preprocessing[col] == 'minmax':
                     min_val = self.preproc_stats['signal_min_values'][col]

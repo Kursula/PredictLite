@@ -39,6 +39,7 @@ class PredictionModel(nn.Module):
         self.output_length = output_length
         self.output_signals = output_signals
         self.output_dim = output_length * len(output_signals)
+        self.output_signal_n = len(output_signals)
         self.lower_p = min(percentiles)
         self.upper_p = max(percentiles)
         self.smoothing_weight = smoothing_weight
@@ -88,18 +89,26 @@ class PredictionModel(nn.Module):
 
         self.long_layers.append(nn.Flatten(start_dim=-2))
         long_output_dim = prev_layer_dim * input_dim
-        
-        # Flattened MLP layers
+
+        # First set of flattened MLP layers for coarse prediction
         prev_layer_dim = seq_output_dim + long_output_dim
-        self.flat_layers = nn.ModuleList()
+        self.flat_layers1 = nn.ModuleList()
+        self.flat_layers1.append(nn.Linear(prev_layer_dim, self.output_dim))
+        self.flat_layers1.append(activation)
+
+        # Second set of flattened MLP layers for refining the prediction
+        prev_layer_dim = self.output_dim + seq_output_dim + long_output_dim
+        self.flat_layers2 = nn.ModuleList()
         for hidden_dim in self.flat_layer_neurons:
-            self.flat_layers.append(nn.Linear(prev_layer_dim, hidden_dim))
-            self.flat_layers.append(activation)
+            self.flat_layers2.append(nn.Linear(prev_layer_dim, hidden_dim))
+            self.flat_layers2.append(activation)
             prev_layer_dim = hidden_dim
 
-        # Output: 3x multiplier because the output contains the predicted values 
-        # and lower and upper percentiles. 
-        self.flat_layers.append(nn.Linear(prev_layer_dim, 3 * self.output_dim))
+        # Output: 3x multiplier because the output contains: 
+        # 0: predicted values 
+        # 1: lower percentiles
+        # 2: upper percentiles
+        self.flat_layers2.append(nn.Linear(prev_layer_dim, 3 * self.output_dim))
                     
             
     def forward(self, x: torch.tensor) -> torch.tensor:
@@ -125,56 +134,93 @@ class PredictionModel(nn.Module):
             x = layer(x)
         long_out = x
         
-        # Flattened layers
+        # Combine tensors for flat layer processing
         x = torch.cat([seq_out, long_out], dim=-1)
-        for layer in self.flat_layers: 
+
+        # Coarse prediction
+        for layer in self.flat_layers1: 
+            x = layer(x)
+        coarse_output = x.reshape(-1, 1, self.output_dim)
+
+        x = torch.cat([seq_out, long_out, x], dim=-1)
+
+        # Refined prediction
+        for layer in self.flat_layers2: 
             x = layer(x)
 
-        # Reshape to [batch, 3 (=prediction, lower percentile, upper percentile), output_dim]
-        x = x.reshape(-1, 3, self.output_dim)  
-        return x
+        # Reshape to [batch, 3, output_dim]
+        refined_output = x.reshape(-1, 3, self.output_dim)  
+
+        # Combine all outputs
+        output = torch.cat((refined_output, coarse_output), dim=1)
+
+        return output
     
     
-    def loss(self, y_pred, y_true): 
+    def loss(self, y_pred, y_true, progress=1.0): 
         # A hybrid percentile and smoothing loss
-        total_loss = 0
-        y_line_pred = y_pred[:, 0, :]   # Line (median or central prediction)
-        y_lower_pred = y_pred[:, 1, :]  # lower percentile
-        y_upper_pred = y_pred[:, 2, :]  # upper percentile
-    
-        # Median line prediction loss.
-        # The median of value distribution is used as prediction. 
-        line_p = 0.5
-        line_errors = y_true - y_line_pred
-        line_loss = torch.max(line_p * line_errors, (line_p - 1) * line_errors).mean()
-        total_loss += line_loss
+
+        # Curriculum learning mask
+        horizon = self.output_length if progress >= 1 else max(1, round(self.output_length * progress))
+        seq_mask = torch.zeros(self.output_length)
+        seq_mask[:horizon] = 1 
+        mask = seq_mask.view(1, self.output_length).repeat(1, self.output_signal_n)
         
+        total_loss = 0
+
+        # Parse predictions
+        y_refined_pred = y_pred[:, 0, :]   # Prediction
+        y_lower_pred = y_pred[:, 1, :]  # lower percentile
+        y_upper_pred = y_pred[:, 2, :]  # upper percentile 
+        y_coarse_pred = y_pred[:, 3, :]  # coarse prediction
+
+        # Refined prediction loss.
+        # The median of value distribution is used as prediction. 
+        percentile = 0.5
+        errors = y_refined_pred - y_true
+        loss = torch.max(percentile * errors, (percentile - 1) * errors)
+        loss = loss * mask
+        total_loss += loss.mean()
+
+        # Coarse prediction loss 
+        percentile = 0.5
+        errors = y_coarse_pred - y_true
+        loss = torch.max(percentile * errors, (percentile - 1) * errors)
+        loss = loss * mask
+        total_loss += loss.mean()
+
         # Lower percentile line loss 
-        errors_lower = y_true - y_lower_pred
-        quantile_loss_lower = torch.max(self.lower_p * errors_lower, (self.lower_p - 1) * errors_lower).mean()
-        total_loss += quantile_loss_lower
+        errors = y_true - y_lower_pred
+        loss = torch.max(self.lower_p * errors, (self.lower_p - 1) * errors)
+        loss = loss * mask
+        total_loss += loss.mean()
         
         # Upper percentile line loss
-        errors_upper = y_true - y_upper_pred
-        quantile_loss_upper = torch.max(self.upper_p * errors_upper, (self.upper_p - 1) * errors_upper).mean()
-        total_loss += quantile_loss_upper
+        errors = y_true - y_upper_pred
+        loss = torch.max(self.upper_p * errors, (self.upper_p - 1) * errors)
+        loss = loss * mask
+        total_loss += loss.mean()
 
         # Smoothness losses
-        tikhonov_loss_line = self.smoothing_weight * self.tikhonov_regularization(y_line_pred)
-        tikhonov_loss_lower = self.smoothing_weight * self.tikhonov_regularization(y_lower_pred)
-        tikhonov_loss_upper = self.smoothing_weight * self.tikhonov_regularization(y_upper_pred)
-        total_loss += tikhonov_loss_line + tikhonov_loss_lower + tikhonov_loss_upper
+        tikhonov_loss_y_refi = self.smoothing_weight * self.tikhonov_regularization(y_refined_pred, seq_mask)
+        tikhonov_loss_lower = self.smoothing_weight * self.tikhonov_regularization(y_lower_pred, seq_mask)
+        tikhonov_loss_upper = self.smoothing_weight * self.tikhonov_regularization(y_upper_pred, seq_mask)
+        total_loss += tikhonov_loss_y_refi + tikhonov_loss_lower + tikhonov_loss_upper
 
         return total_loss
 
     
-    def tikhonov_regularization(self, y_pred):
+    def tikhonov_regularization(self, y_pred, mask):
         
         # Reshape y_pred to [batch, output_vars, time_steps]
         y_pred_reshaped = y_pred.view(y_pred.size(0), len(self.output_signals), self.output_length)
+
+        # Reshape mask 
+        mask = mask.view(1, 1, 1, self.output_length)
         
         # Calculate differences along the time steps dimension
         diff = y_pred_reshaped[..., 1:] - y_pred_reshaped[..., :-1]
+        diff = diff * mask[..., :-1]
         
         # Compute the squared differences and mean over all dimensions
         tikhonov_loss = (diff ** 2).mean()
@@ -231,14 +277,22 @@ class PredictionModel(nn.Module):
             else: 
                 print('\t{}'.format(layer))
         
-        print('MLP flattened part:')
-        for layer in self.flat_layers: 
+        print('MLP flattened part for coarse prediction:')
+        for layer in self.flat_layers1: 
             if type(layer) == torch.nn.modules.linear.Linear: 
                 pc = (layer.in_features + 1) * layer.out_features
                 tot_mlp_params += pc
                 print('\t{}, parameter count: {}'.format(layer, pc))
             else: 
-                print('\t{}'.format(layer))        
+                print('\t{}'.format(layer))
                 
+        print('MLP flattened part for refined prediction:')
+        for layer in self.flat_layers2: 
+            if type(layer) == torch.nn.modules.linear.Linear: 
+                pc = (layer.in_features + 1) * layer.out_features
+                tot_mlp_params += pc
+                print('\t{}, parameter count: {}'.format(layer, pc))
+            else: 
+                print('\t{}'.format(layer))                     
         print('\nTotal MLP parameter count: {}'.format(tot_mlp_params))
         

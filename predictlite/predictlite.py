@@ -45,7 +45,7 @@ class PredictLite:
         zerofill_nan: bool = True,
         interpolate_nan: bool = True,
         percentiles: list = [0.25, 0.75],
-        smoothing_weight: float = 0.5,
+        smoothing_weight: float = 0.1,
     ): 
 
         self.load_from_file = load_from_file
@@ -181,6 +181,7 @@ class PredictLite:
             learning_rate: float = 1e-4, 
             batch_size: int = 64,
             epochs: int = 30,
+            curriculum_training: bool = True, 
             random_seed: int = None, 
             verbose: bool = True
            ) -> None:
@@ -194,6 +195,7 @@ class PredictLite:
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.epochs = epochs
+        self.curriculum_training = curriculum_training
         self.random_seed = random_seed
         self.verbose = verbose
         
@@ -284,9 +286,12 @@ class PredictLite:
             model=self.model, 
             learning_rate=self.learning_rate, 
             epochs=self.epochs, 
+            curriculum_training=self.curriculum_training,
             logging=self.logging
         )
         self.logging('Training the model')
+        if self.curriculum_training:
+            self.logging('Curriculum training mode for first {} epochs'.format(self.epochs // 2))
         self.train_losses, self.test_losses = self.model_trainer.fit(train_loader, test_loader)
         self.logging('Model training done')
         self.fit_done = True

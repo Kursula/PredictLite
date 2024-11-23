@@ -99,7 +99,7 @@ class PredictionModelUtils:
         results = {}
         if len(output_tensor.shape) == 3: 
             keys = ['prediction', 'lower_percentile', 'upper_percentile']
-            for i in range(3):
+            for i in range(len(keys)):
                 values = output_tensor[:, i, :].numpy().reshape((self.output_length, len(self.output_signals)), order='F')
                 pred = pd.DataFrame(data=values, columns=self.output_signals)
                 results[keys[i]] = pred
@@ -133,7 +133,7 @@ class PredictionModelUtils:
                                  .format(sample_count, len(possible_timestamps)))
             sample_timestamps = np.random.choice(possible_timestamps, sample_count, replace=False)
             
-        # Crete samples
+        # Create samples
         for timestamp in sample_timestamps:
             if np.random.rand() < embedding_ood_ratio: 
                 force_ood = True
